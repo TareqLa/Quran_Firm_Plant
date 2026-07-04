@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "quran-redesign",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../Quran-Firm-Plant-redesign", "run", "dev", "--", "--port", "5174"],
+      "port": 5174,
+      "autoPort": true
     }
   ]
 }
