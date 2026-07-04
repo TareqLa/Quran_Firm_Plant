@@ -1,43 +1,53 @@
-/* Quran Firm Plant Design System - Premium Dark Emerald & Gold Theme */
+/* Quran Firm Plant Design System - Illuminated Manuscript Theme
+   Warm parchment, sepia ink, antique gold & deep emerald accents.
+   Layout: horizontal top navigation (the .sidebar element is restyled
+   as a top band on desktop and returns to a drawer on mobile). */
 
 :root {
   /* HSL Color Palette */
-  --bg-primary: hsl(165, 45%, 6%);       /* Deepest emerald background */
-  --bg-secondary: hsl(165, 40%, 10%);   /* Card and sidebar background */
-  --bg-tertiary: hsl(165, 30%, 16%);    /* Input and hover state background */
-  
-  --accent-gold: hsl(43, 80%, 55%);     /* Main elegant gold accent */
-  --accent-gold-hover: hsl(43, 90%, 65%);
-  --accent-gold-glow: hsla(43, 80%, 55%, 0.15);
-  
-  --text-primary: hsl(38, 25%, 88%);    /* Cream white for readability */
-  --text-secondary: hsl(165, 15%, 65%);  /* Pale green-grey for UI labels */
-  --text-muted: hsl(165, 10%, 45%);      /* Darker grey for helper text */
-  
-  --color-success: hsl(142, 60%, 45%);   /* Soft green for correct words */
-  --color-error: hsl(350, 65%, 50%);     /* Crimson red for errors */
-  --color-info: hsl(200, 75%, 45%);      /* Blue for info/notices */
-  
+  --bg-primary: hsl(42, 42%, 93%);       /* Warm parchment page background */
+  --bg-secondary: hsl(43, 55%, 97%);     /* Card "paper" background */
+  --bg-tertiary: hsl(42, 38%, 87%);      /* Input and hover state background */
+
+  --accent-gold: hsl(38, 62%, 40%);      /* Antique bronze-gold accent (ink-legible on parchment) */
+  --accent-gold-hover: hsl(38, 70%, 33%);
+  --accent-gold-glow: hsla(38, 62%, 40%, 0.14);
+
+  --accent-emerald: hsl(162, 42%, 24%);  /* Deep emerald for primary actions & active states */
+  --accent-emerald-soft: hsla(162, 42%, 24%, 0.09);
+
+  --text-primary: hsl(28, 32%, 17%);     /* Sepia ink */
+  --text-secondary: hsl(28, 16%, 38%);   /* Faded ink for labels */
+  --text-muted: hsl(30, 12%, 54%);       /* Helper text */
+
+  --color-success: hsl(150, 45%, 30%);   /* Deep green for correct words */
+  --color-error: hsl(355, 62%, 40%);     /* Madder red for errors */
+  --color-info: hsl(205, 60%, 36%);      /* Ink blue for notices */
+
   /* Layout Transitions */
   --transition-fast: 0.15s ease;
   --transition-medium: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  
-  /* Shadows */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --shadow-gold: 0 0 15px hsla(43, 80%, 55%, 0.25);
-  
+
+  /* Shadows - soft, warm, papery */
+  --shadow-sm: 0 1px 3px hsla(30, 40%, 25%, 0.10);
+  --shadow-md: 0 4px 14px hsla(30, 40%, 25%, 0.14);
+  --shadow-lg: 0 12px 32px hsla(30, 40%, 25%, 0.18);
+  --shadow-gold: 0 0 0 3px hsla(38, 62%, 40%, 0.12);
+
   /* Fonts */
   --font-sans: 'Inter', sans-serif;
+  --font-serif: 'Lora', Georgia, serif;
   --font-arabic: 'Amiri', 'Scheherazade New', serif;
-  
+
   /* Borders */
-  --border-color: hsla(165, 30%, 20%, 0.5);
-  --border-radius-sm: 6px;
-  --border-radius-md: 12px;
-  --border-radius-lg: 18px;
+  --border-color: hsla(35, 30%, 40%, 0.25);
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+
+  /* Dark "ink slate" writing surfaces (canvas ink color is cream, set in JS) */
+  --ink-slate: hsl(38, 18%, 12%);
 }
 
 /* Reset and Global Styles */
@@ -49,6 +59,11 @@
 
 body {
   background-color: var(--bg-primary);
+  /* Subtle parchment mottling */
+  background-image:
+    radial-gradient(ellipse at 20% 0%, hsla(40, 60%, 99%, 0.55), transparent 55%),
+    radial-gradient(ellipse at 85% 100%, hsla(35, 45%, 80%, 0.35), transparent 60%);
+  background-attachment: fixed;
   color: var(--text-primary);
   font-family: var(--font-sans);
   overflow: hidden;
@@ -66,104 +81,112 @@ button {
   outline: none;
 }
 
-/* Main Layout Container */
+/* Main Layout Container: column — nav band on top, content below */
 .app-container {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
 }
 
-/* Sidebar Styling */
+/* Top Navigation Band (markup class is .sidebar; restyled horizontally) */
 .sidebar {
-  width: 280px;
+  width: 100%;
   background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
+  border-bottom: 2px solid var(--accent-gold);
   display: flex;
-  flex-direction: column;
-  height: 100%;
+  flex-direction: row;
+  align-items: stretch;
+  height: auto;
   flex-shrink: 0;
   z-index: 10;
   box-shadow: var(--shadow-sm);
 }
 
 .sidebar-brand {
-  padding: 24px;
+  padding: 14px 28px;
   display: flex;
   align-items: center;
   gap: 12px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: none;
+  border-right: 1px solid var(--border-color);
 }
 
 .brand-icon {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   color: var(--accent-gold);
-  filter: drop-shadow(0 0 4px var(--accent-gold-glow));
 }
 
 .brand-name {
-  font-size: 1.15rem;
+  font-family: var(--font-serif);
+  font-size: 1.2rem;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  background: linear-gradient(135deg, var(--text-primary), var(--accent-gold));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.2px;
+  color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .sidebar-nav {
-  padding: 20px 12px;
+  padding: 0 12px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 4px;
   flex-grow: 1;
-  overflow-y: auto;
+  overflow-y: visible;
+  overflow-x: auto;
 }
 
 .nav-btn {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 12px 16px;
-  border-radius: var(--border-radius-md);
-  font-size: 0.95rem;
+  gap: 9px;
+  padding: 0 18px;
+  border-radius: 0;
+  font-size: 0.9rem;
   font-weight: 500;
   color: var(--text-secondary);
-  transition: all var(--transition-fast);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
   text-align: left;
+  border-bottom: 3px solid transparent;
+  white-space: nowrap;
 }
 
 .nav-btn:hover {
-  background-color: var(--bg-tertiary);
+  background-color: var(--accent-emerald-soft);
   color: var(--text-primary);
 }
 
 .nav-btn.active {
-  background: linear-gradient(135deg, var(--bg-tertiary), rgba(10, 34, 28, 0.4));
-  color: var(--accent-gold);
-  border-left: 3px solid var(--accent-gold);
-  padding-left: 13px;
-  box-shadow: var(--shadow-sm);
+  background: transparent;
+  color: var(--accent-emerald);
+  border-bottom: 3px solid var(--accent-emerald);
+  font-weight: 600;
 }
 
 .nav-icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   transition: transform var(--transition-fast);
 }
 
 .nav-btn:hover .nav-icon {
-  transform: translateX(2px);
+  transform: translateY(-1px);
 }
 
 .nav-btn.active .nav-icon {
-  color: var(--accent-gold);
+  color: var(--accent-emerald);
 }
 
 .sidebar-footer {
-  padding: 16px 20px;
-  border-top: 1px solid var(--border-color);
+  padding: 0 24px;
+  border-top: none;
+  border-left: 1px solid var(--border-color);
   font-size: 0.85rem;
+  display: flex;
+  align-items: center;
 }
 
 /* Status Indicator */
@@ -172,6 +195,7 @@ button {
   align-items: center;
   gap: 10px;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -185,7 +209,7 @@ button {
 
 .status-indicator.online .status-dot {
   background-color: var(--color-success);
-  box-shadow: 0 0 8px var(--color-success);
+  box-shadow: 0 0 6px hsla(150, 45%, 30%, 0.5);
 }
 
 /* Main Layout content */
@@ -195,50 +219,53 @@ button {
   flex-grow: 1;
   height: 100%;
   overflow: hidden;
-  background-color: var(--bg-primary);
+  background-color: transparent;
 }
 
 .app-header {
-  height: 70px;
+  height: 64px;
   padding: 0 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border-color);
-  background-color: rgba(5, 20, 16, 0.5);
-  backdrop-filter: blur(10px);
+  background-color: hsla(43, 55%, 97%, 0.6);
+  backdrop-filter: blur(8px);
   z-index: 5;
 }
 
 #module-title {
-  font-size: 1.4rem;
-  font-weight: 700;
+  font-family: var(--font-serif);
+  font-size: 1.45rem;
+  font-weight: 600;
+  font-style: italic;
   color: var(--text-primary);
-  letter-spacing: -0.5px;
+  letter-spacing: 0;
 }
 
 /* Scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-primary);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-tertiary);
-  border-radius: var(--border-radius-sm);
+  background: hsla(35, 30%, 40%, 0.30);
+  border-radius: 8px;
+  border: 2px solid var(--bg-primary);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: hsla(35, 30%, 40%, 0.5);
 }
 
 /* Content Container */
 .content-container {
-  padding: 32px;
+  padding: 36px 32px;
   flex-grow: 1;
   overflow-y: auto;
   position: relative;
@@ -249,7 +276,7 @@ button {
 /* Global Quran Selector Dropdown */
 .quran-selector {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
 }
 
@@ -258,17 +285,18 @@ button {
   border: 1px solid var(--border-color);
   color: var(--text-primary);
   padding: 8px 16px;
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   font-size: 0.9rem;
   transition: all var(--transition-fast);
   display: flex;
   align-items: center;
   gap: 8px;
+  box-shadow: var(--shadow-sm);
 }
 
 .selector-input:focus, .selector-btn:hover {
   border-color: var(--accent-gold);
-  box-shadow: 0 0 8px var(--accent-gold-glow);
+  box-shadow: var(--shadow-gold);
 }
 
 /* Database Loading Modal Overlay */
@@ -278,8 +306,8 @@ button {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background-color: rgba(5, 20, 16, 0.85);
-  backdrop-filter: blur(8px);
+  background-color: hsla(42, 42%, 90%, 0.88);
+  backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -296,13 +324,15 @@ button {
 
 .loading-card {
   background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--accent-gold);
+  outline: 4px double hsla(38, 62%, 40%, 0.35);
+  outline-offset: 5px;
   padding: 40px;
-  border-radius: var(--border-radius-lg);
+  border-radius: var(--border-radius-sm);
   text-align: center;
   max-width: 480px;
   width: 90%;
-  box-shadow: var(--shadow-lg), var(--shadow-gold);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -324,6 +354,7 @@ button {
 }
 
 .loading-card h3 {
+  font-family: var(--font-serif);
   font-size: 1.3rem;
   margin-bottom: 12px;
   font-weight: 700;
@@ -339,8 +370,8 @@ button {
 .progress-bar-container {
   width: 100%;
   height: 8px;
-  background-color: var(--bg-primary);
-  border-radius: var(--border-radius-sm);
+  background-color: var(--bg-tertiary);
+  border-radius: 999px;
   margin-bottom: 12px;
   overflow: hidden;
   border: 1px solid var(--border-color);
@@ -348,11 +379,10 @@ button {
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent-gold), hsl(43, 90%, 65%));
-  border-radius: var(--border-radius-sm);
+  background: linear-gradient(90deg, var(--accent-emerald), hsl(162, 42%, 34%));
+  border-radius: 999px;
   width: 0%;
   transition: width 0.1s ease;
-  box-shadow: 0 0 10px hsla(43, 80%, 55%, 0.5);
 }
 
 #db-progress-text {
@@ -364,34 +394,36 @@ button {
 .card {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border-radius: var(--border-radius-md);
   padding: 24px;
   box-shadow: var(--shadow-sm);
-  transition: transform var(--transition-medium), box-shadow var(--transition-medium);
+  transition: box-shadow var(--transition-medium);
 }
 
 .card:hover {
   box-shadow: var(--shadow-md);
 }
 
-/* Premium Button Styling */
+/* Primary Button Styling (class name kept from original design system) */
 .btn-gold {
-  background: linear-gradient(135deg, var(--accent-gold), hsl(43, 85%, 45%));
-  color: hsl(165, 45%, 3%);
-  padding: 10px 20px;
-  border-radius: var(--border-radius-md);
+  background: linear-gradient(180deg, hsl(162, 42%, 28%), var(--accent-emerald));
+  color: hsl(43, 55%, 96%);
+  padding: 10px 22px;
+  border-radius: var(--border-radius-sm);
   font-weight: 600;
+  letter-spacing: 0.2px;
   transition: all var(--transition-fast);
   display: inline-flex;
   align-items: center;
   gap: 8px;
   box-shadow: var(--shadow-sm);
+  border: 1px solid hsl(162, 42%, 18%);
 }
 
 .btn-gold:hover {
   transform: translateY(-1px);
-  box-shadow: var(--shadow-md), var(--shadow-gold);
-  background: linear-gradient(135deg, var(--accent-gold-hover), var(--accent-gold));
+  box-shadow: var(--shadow-md);
+  background: linear-gradient(180deg, hsl(162, 42%, 32%), hsl(162, 42%, 26%));
 }
 
 .btn-gold:active {
@@ -400,10 +432,10 @@ button {
 
 .btn-outline {
   border: 1px solid var(--border-color);
-  background-color: transparent;
+  background-color: var(--bg-secondary);
   color: var(--text-primary);
   padding: 10px 20px;
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   font-weight: 500;
   transition: all var(--transition-fast);
   display: inline-flex;
@@ -413,7 +445,7 @@ button {
 
 .btn-outline:hover {
   background-color: var(--bg-tertiary);
-  border-color: var(--text-secondary);
+  border-color: var(--accent-gold);
 }
 
 /* Custom Selection Dropdown Modal */
@@ -421,10 +453,10 @@ button {
   position: fixed;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%) scale(0.95);
+  transform: translate(-50%, -50%) scale(0.97);
   background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--accent-gold);
+  border-radius: var(--border-radius-md);
   width: 90%;
   max-width: 500px;
   max-height: 80vh;
@@ -444,7 +476,7 @@ button {
 }
 
 .modal-header {
-  padding: 20px;
+  padding: 18px 20px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
@@ -452,6 +484,7 @@ button {
 }
 
 .modal-title {
+  font-family: var(--font-serif);
   font-size: 1.15rem;
   font-weight: 700;
 }
@@ -471,19 +504,20 @@ button {
 /* Search bar inside modals */
 .search-input {
   width: 100%;
-  background-color: var(--bg-tertiary);
+  background-color: hsl(43, 55%, 99%);
   border: 1px solid var(--border-color);
   color: var(--text-primary);
   padding: 12px 16px;
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   font-size: 0.95rem;
   margin-bottom: 16px;
   outline: none;
-  transition: border var(--transition-fast);
+  transition: border var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .search-input:focus {
   border-color: var(--accent-gold);
+  box-shadow: var(--shadow-gold);
 }
 
 /* Quranic Text Display Settings */
@@ -494,7 +528,6 @@ button {
   line-height: 2.2;
   font-size: 2.35rem;
   word-spacing: 2px;
-  text-shadow: 0 1px 1px rgba(0,0,0,0.1);
 }
 
 /* Blank page styles */
@@ -508,8 +541,10 @@ button {
 .quran-card {
   flex-grow: 1;
   background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--accent-gold);
+  outline: 3px double hsla(38, 62%, 40%, 0.30);
+  outline-offset: 4px;
+  border-radius: var(--border-radius-sm);
   padding: 40px;
   box-shadow: var(--shadow-sm);
   display: flex;
@@ -517,7 +552,6 @@ button {
   justify-content: center;
   min-height: 350px;
   position: relative;
-  background-image: radial-gradient(circle at top right, hsla(43, 80%, 55%, 0.02), transparent);
 }
 
 .quran-card.quran-text {
@@ -547,7 +581,7 @@ button {
 }
 
 .word-block.hidden-word:hover {
-  background-color: hsla(43, 80%, 55%, 0.1);
+  background-color: var(--accent-gold-glow);
 }
 
 .word-block.revealed {
@@ -575,7 +609,7 @@ button {
   border: 2px solid var(--accent-gold);
   color: var(--accent-gold);
   margin: 0 8px;
-  background-color: rgba(5, 20, 16, 0.4);
+  background-color: hsla(38, 62%, 40%, 0.06);
   vertical-align: middle;
   direction: ltr;
 }
@@ -593,13 +627,15 @@ button {
 .mushaf-page-grid {
   display: flex;
   flex-direction: column;
-  border: 4px double var(--accent-gold);
+  border: 1px solid var(--accent-gold);
+  outline: 4px double hsla(38, 62%, 40%, 0.45);
+  outline-offset: 5px;
   padding: 16px;
-  background-color: hsl(165, 40%, 8%);
-  border-radius: var(--border-radius-md);
+  background-color: hsl(44, 60%, 96%);
+  border-radius: var(--border-radius-sm);
   width: 100%;
   aspect-ratio: 1 / 1.5; /* Approximate proportion of Mushaf page */
-  box-shadow: var(--shadow-lg), 0 0 30px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-md);
   position: relative;
   overflow: hidden;
 }
@@ -610,7 +646,7 @@ button {
   justify-content: space-between;
   align-items: center;
   flex: 1; /* Distribute available height evenly across 15 lines without overflowing padding */
-  border-bottom: 1px dashed rgba(212, 175, 55, 0.08);
+  border-bottom: 1px dashed hsla(38, 62%, 40%, 0.18);
   padding: 0 4px;
   position: relative;
   min-height: 0; /* Allow flex items to shrink past their intrinsic height */
@@ -640,13 +676,13 @@ button {
 
 /* Line connectors */
 .mushaf-line-active {
-  background-color: rgba(212, 175, 55, 0.05);
+  background-color: hsla(38, 62%, 40%, 0.08);
 }
 
 .mushaf-word-box {
-  background-color: var(--bg-secondary);
+  background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 3px;
   height: 65%;
   margin: 0 2px;
   display: flex;
@@ -663,8 +699,8 @@ button {
 }
 
 .mushaf-word-box:hover {
-  background-color: var(--bg-tertiary);
-  border-color: var(--text-secondary);
+  background-color: var(--accent-gold-glow);
+  border-color: var(--accent-gold);
 }
 
 .mushaf-word-box.revealed {
@@ -675,8 +711,7 @@ button {
 
 .mushaf-word-box.marked-forgotten {
   border: 1px solid var(--color-error);
-  background-color: hsla(350, 65%, 50%, 0.1);
-  box-shadow: 0 0 8px hsla(350, 65%, 50%, 0.3) inset;
+  background-color: hsla(355, 62%, 40%, 0.10);
 }
 
 .mushaf-word-box.marked-forgotten.revealed {
@@ -688,13 +723,13 @@ button {
 
 .mushaf-word-box.verse-locate-flash {
   border-color: var(--accent-gold) !important;
-  box-shadow: 0 0 12px rgba(212, 175, 55, 0.6);
+  box-shadow: 0 0 10px hsla(38, 62%, 40%, 0.5);
   animation: verseLocatePulse 1.6s ease-in-out 2;
 }
 
 @keyframes verseLocatePulse {
-  0%, 100% { background-color: rgba(212, 175, 55, 0.05); }
-  50% { background-color: rgba(212, 175, 55, 0.4); }
+  0%, 100% { background-color: hsla(38, 62%, 40%, 0.08); }
+  50% { background-color: hsla(38, 62%, 40%, 0.35); }
 }
 
 .mushaf-word-box.ayah-end-block {
@@ -711,9 +746,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  background-color: transparent;
 }
-
-/* Duplicate block removed */
 
 .mushaf-line-number,
 .mushaf-line-right-number {
@@ -726,9 +760,9 @@ button {
 .mushaf-context-menu {
   background-color: var(--bg-secondary);
   border: 1px solid var(--accent-gold);
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   padding: 6px;
-  box-shadow: var(--shadow-lg), 0 0 15px rgba(212, 175, 55, 0.2);
+  box-shadow: var(--shadow-lg);
   z-index: 10000;
   animation: contextMenuFadeIn var(--transition-fast) forwards;
 }
@@ -751,8 +785,8 @@ button {
 }
 
 .context-menu-item:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--accent-gold);
+  background-color: var(--accent-emerald-soft);
+  color: var(--accent-emerald);
 }
 
 .context-menu-translation {
@@ -761,6 +795,7 @@ button {
   border-bottom: 1px solid var(--border-color);
   font-size: 0.85rem;
   font-style: italic;
+  font-family: var(--font-serif);
   color: var(--text-secondary);
   text-align: center;
 }
@@ -768,15 +803,15 @@ button {
 /* Word-by-word translation hover tooltip */
 .mushaf-word-tooltip {
   position: fixed;
-  background-color: var(--bg-secondary);
+  background-color: var(--text-primary);
   border: 1px solid var(--accent-gold);
   border-radius: var(--border-radius-sm);
   padding: 5px 10px;
   font-family: var(--font-sans);
   font-size: 0.8rem;
   font-weight: 500;
-  color: var(--text-primary);
-  box-shadow: var(--shadow-md), 0 0 10px rgba(212, 175, 55, 0.2);
+  color: hsl(43, 55%, 96%);
+  box-shadow: var(--shadow-md);
   white-space: nowrap;
   z-index: 10000;
   pointer-events: none;
@@ -796,8 +831,10 @@ button {
 
 .line-connector-prompt {
   background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--accent-gold);
+  outline: 3px double hsla(38, 62%, 40%, 0.3);
+  outline-offset: 4px;
+  border-radius: var(--border-radius-sm);
   padding: 32px;
   text-align: center;
 }
@@ -810,10 +847,11 @@ button {
 }
 
 .prompt-label {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--text-secondary);
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 1.5px;
+  font-weight: 600;
 }
 
 .prompt-word-gold {
@@ -840,21 +878,22 @@ button {
   text-align: center;
   direction: rtl;
   transition: all var(--transition-fast);
+  box-shadow: var(--shadow-sm);
 }
 
 .option-btn:hover {
-  border-color: var(--text-secondary);
+  border-color: var(--accent-gold);
   background-color: var(--bg-tertiary);
 }
 
 .option-btn.correct {
-  background-color: rgba(76, 175, 80, 0.15);
+  background-color: hsla(150, 45%, 30%, 0.10);
   border-color: var(--color-success);
   color: var(--color-success);
 }
 
 .option-btn.incorrect {
-  background-color: rgba(244, 67, 54, 0.15);
+  background-color: hsla(355, 62%, 40%, 0.10);
   border-color: var(--color-error);
   color: var(--color-error);
 }
@@ -872,7 +911,7 @@ button {
 .canvas-card {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border-radius: var(--border-radius-md);
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -895,12 +934,14 @@ button {
   align-items: center;
 }
 
+/* The writing sheet stays dark: the JS draws with cream-colored ink,
+   so the surface reads as a warm ink slate inside the light UI. */
 .canvas-wrapper {
   position: relative;
-  background-color: #030d0a; /* Darker slate for writing sheet */
-  border-radius: var(--border-radius-md);
+  background-color: var(--ink-slate);
+  border-radius: var(--border-radius-sm);
   overflow: hidden;
-  border: 1px solid rgba(212, 175, 55, 0.1);
+  border: 1px solid var(--accent-gold);
   aspect-ratio: 16 / 9;
   width: 100%;
 }
@@ -943,15 +984,15 @@ button {
 }
 
 .canvas-ghost-word .ghost-word {
-  color: var(--text-primary);
+  color: hsl(43, 55%, 96%);
   opacity: 0.14;
   margin: 0 0.12em;
   transition: opacity var(--transition-fast), color var(--transition-fast);
 }
 
 .canvas-ghost-word .ghost-word-active {
-  color: var(--accent-gold);
-  opacity: 0.5;
+  color: hsl(43, 80%, 70%);
+  opacity: 0.55;
 }
 
 /* Whole-page writing: trace the full page, scroll with the side slider */
@@ -970,9 +1011,9 @@ button {
   max-height: 640px;
   overflow-y: auto;
   overflow-x: hidden;
-  background-color: #030d0a;
-  border: 1px solid rgba(212, 175, 55, 0.1);
-  border-radius: var(--border-radius-md);
+  background-color: var(--ink-slate);
+  border: 1px solid var(--accent-gold);
+  border-radius: var(--border-radius-sm);
   scrollbar-width: none;
 }
 
@@ -1000,7 +1041,7 @@ button {
   justify-content: space-between;
   align-items: center;
   min-height: 52px;
-  border-bottom: 1px dashed rgba(212, 175, 55, 0.12);
+  border-bottom: 1px dashed hsla(43, 70%, 70%, 0.15);
   padding: 0 2px;
   gap: 2px;
 }
@@ -1008,17 +1049,17 @@ button {
 .canvas-ghost-page .ghost-word {
   font-family: var(--font-arabic);
   font-size: clamp(1.2rem, 5vw, 1.9rem);
-  color: var(--text-primary);
+  color: hsl(43, 55%, 96%);
   opacity: 0.16;
   line-height: 1;
 }
 
 .canvas-ghost-page .ghost-ayah-end {
-  opacity: 0.3;
-  color: var(--accent-gold);
+  opacity: 0.35;
+  color: hsl(43, 80%, 70%);
   font-family: var(--font-sans);
   font-size: 0.7rem;
-  border: 1px solid var(--accent-gold);
+  border: 1px solid hsl(43, 80%, 70%);
   border-radius: 50%;
   width: 16px;
   height: 16px;
@@ -1032,8 +1073,8 @@ button {
 .canvas-ghost-page .ghost-page-bismillah {
   font-family: var(--font-arabic);
   font-size: clamp(1rem, 4vw, 1.6rem);
-  color: var(--accent-gold);
-  opacity: 0.22;
+  color: hsl(43, 80%, 70%);
+  opacity: 0.25;
   flex-grow: 1;
   text-align: center;
 }
@@ -1066,7 +1107,7 @@ button {
   writing-mode: vertical-lr; /* vertical range; value 0 (page top) sits at the top */
   width: 24px;
   flex: 1;
-  accent-color: var(--accent-gold);
+  accent-color: var(--accent-emerald);
   cursor: pointer;
 }
 
@@ -1076,9 +1117,9 @@ button {
   width: 100%;
   height: 300px;
   overflow: auto;
-  border-radius: var(--border-radius-md);
-  background-color: hsl(165, 40%, 6%);
-  border: 1px solid rgba(212, 175, 55, 0.15);
+  border-radius: var(--border-radius-sm);
+  background-color: hsl(44, 50%, 94%);
+  border: 1px solid var(--border-color);
   /* Allow native one-finger panning; two-finger pinch is handled in JS */
   touch-action: pan-x pan-y;
   cursor: grab;
@@ -1100,6 +1141,7 @@ button {
 .page-overview-inner .mushaf-page-grid {
   aspect-ratio: auto;
   box-shadow: none;
+  outline: none;
   overflow: visible; /* viewport scrolls, not the grid itself */
   padding: 8px;
   /* width/height set inline in JS to one viewport; CSS `zoom` scales from there */
@@ -1107,13 +1149,13 @@ button {
 
 .overview-line {
   transition: opacity var(--transition-fast), background-color var(--transition-fast);
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: pointer;
 }
 
 .overview-line.active-line {
   opacity: 1;
-  background-color: rgba(212, 175, 55, 0.12);
+  background-color: hsla(38, 62%, 40%, 0.14);
   border-radius: 4px;
 }
 
@@ -1127,8 +1169,8 @@ button {
 }
 
 .overview-word-active {
-  color: var(--accent-gold);
-  text-shadow: 0 0 8px rgba(212, 175, 55, 0.5);
+  color: var(--accent-gold-hover);
+  font-weight: 700;
 }
 
 .overview-ayah-end {
@@ -1161,6 +1203,7 @@ button {
   justify-content: center;
   color: var(--text-secondary);
   transition: all var(--transition-fast);
+  background-color: var(--bg-secondary);
 }
 
 .brush-btn:hover {
@@ -1169,9 +1212,9 @@ button {
 }
 
 .brush-btn.active {
-  background-color: var(--accent-gold);
-  color: hsl(165, 45%, 3%);
-  border-color: var(--accent-gold);
+  background-color: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
+  border-color: var(--accent-emerald);
 }
 
 /* Typing Mode Styling */
@@ -1206,11 +1249,11 @@ button {
 
 .typing-input {
   width: 100%;
-  background-color: var(--bg-tertiary);
+  background-color: hsl(43, 55%, 99%);
   border: 2px solid var(--border-color);
   color: var(--text-primary);
   padding: 16px;
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   font-size: 1.6rem;
   font-family: var(--font-arabic);
   outline: none;
@@ -1263,7 +1306,7 @@ button {
   width: 100%;
   height: 100%;
   border-radius: 50%;
-  background-color: var(--accent-gold-glow);
+  background-color: var(--accent-emerald-soft);
   opacity: 0;
   transition: all var(--transition-medium);
 }
@@ -1281,12 +1324,13 @@ button {
   width: 100px;
   height: 100px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent-gold), hsl(43, 85%, 45%));
-  color: hsl(165, 45%, 3%);
+  background: linear-gradient(180deg, hsl(162, 42%, 30%), var(--accent-emerald));
+  color: hsl(43, 55%, 96%);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: var(--shadow-md), 0 0 15px hsla(43, 80%, 55%, 0.3);
+  box-shadow: var(--shadow-md);
+  border: 3px solid hsla(38, 62%, 40%, 0.5);
   transition: all var(--transition-medium);
   z-index: 2;
 }
@@ -1298,9 +1342,9 @@ button {
 }
 
 .mic-btn-container.listening .mic-btn {
-  background: linear-gradient(135deg, var(--color-error), hsl(350, 75%, 40%));
+  background: linear-gradient(180deg, var(--color-error), hsl(355, 62%, 34%));
   color: white;
-  box-shadow: 0 0 20px hsla(350, 65%, 50%, 0.4);
+  border-color: hsla(355, 62%, 40%, 0.4);
 }
 
 .mic-btn:hover {
@@ -1310,6 +1354,8 @@ button {
 .voice-status {
   font-size: 1.05rem;
   font-weight: 500;
+  font-family: var(--font-serif);
+  font-style: italic;
   color: var(--text-secondary);
   height: 24px;
 }
@@ -1317,8 +1363,10 @@ button {
 .transcription-box {
   width: 100%;
   background-color: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--accent-gold);
+  outline: 3px double hsla(38, 62%, 40%, 0.3);
+  outline-offset: 4px;
+  border-radius: var(--border-radius-sm);
   padding: 24px;
   min-height: 100px;
   text-align: center;
@@ -1354,7 +1402,7 @@ button {
   justify-content: center;
   gap: 6px;
   padding: 10px 16px;
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
@@ -1371,10 +1419,9 @@ button {
 }
 
 .vf-tab-btn.active {
-  background: var(--accent-gold-glow);
-  border-color: var(--accent-gold);
-  color: var(--accent-gold);
-  box-shadow: 0 0 10px hsla(43, 80%, 55%, 0.1);
+  background: var(--accent-emerald-soft);
+  border-color: var(--accent-emerald);
+  color: var(--accent-emerald);
 }
 
 /* Voice Finder - Panels */
@@ -1384,6 +1431,7 @@ button {
   border-radius: var(--border-radius-md);
   padding: 16px;
   animation: vfPanelIn 0.25s ease-out;
+  box-shadow: var(--shadow-sm);
 }
 
 @keyframes vfPanelIn {
@@ -1393,7 +1441,7 @@ button {
 
 .vf-clear-btn {
   background: none;
-  border: 1px solid var(--color-error);
+  border: 1px solid hsla(355, 62%, 40%, 0.4);
   color: var(--color-error);
   font-size: 0.75rem;
   padding: 4px 10px;
@@ -1469,7 +1517,7 @@ button {
 
 .vf-delete-btn:hover {
   color: var(--color-error);
-  background: rgba(244, 67, 54, 0.1);
+  background: hsla(355, 62%, 40%, 0.1);
 }
 
 /* Voice Finder - Star / Favorite Button */
@@ -1506,7 +1554,7 @@ button {
 
 .vf-fav-card:hover {
   border-color: var(--accent-gold) !important;
-  box-shadow: 0 0 8px hsla(43, 80%, 55%, 0.1);
+  box-shadow: var(--shadow-gold);
 }
 
 
@@ -1533,7 +1581,8 @@ button {
   position: relative;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-lg);
+  border-radius: var(--border-radius-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .comparison-header {
@@ -1545,8 +1594,9 @@ button {
 }
 
 .comparison-surah {
+  font-family: var(--font-serif);
   font-weight: 700;
-  color: var(--accent-gold);
+  color: var(--accent-emerald);
 }
 
 .comparison-ayah-num {
@@ -1566,28 +1616,30 @@ button {
 }
 
 .diff-word-highlight-green {
-  background-color: rgba(76, 175, 80, 0.15);
+  background-color: hsla(150, 45%, 30%, 0.12);
   border-bottom: 2px solid var(--color-success);
   padding: 0 4px;
   border-radius: 4px;
-  color: hsl(142, 75%, 65%);
+  color: var(--color-success);
 }
 
 .diff-word-highlight-red {
-  background-color: rgba(244, 67, 54, 0.15);
+  background-color: hsla(355, 62%, 40%, 0.10);
   border-bottom: 2px solid var(--color-error);
   padding: 0 4px;
   border-radius: 4px;
-  color: hsl(350, 75%, 65%);
+  color: var(--color-error);
 }
 
 .note-box {
   margin-top: 16px;
-  background-color: var(--bg-tertiary);
+  background-color: hsla(38, 62%, 40%, 0.07);
   border-left: 3px solid var(--accent-gold);
   padding: 12px 16px;
   border-radius: 0 var(--border-radius-sm) var(--border-radius-sm) 0;
   font-size: 0.9rem;
+  font-family: var(--font-serif);
+  font-style: italic;
   color: var(--text-secondary);
 }
 
@@ -1601,7 +1653,7 @@ button {
 .surah-grid-item {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-md);
+  border-radius: var(--border-radius-sm);
   padding: 14px 18px;
   display: flex;
   align-items: center;
@@ -1666,8 +1718,8 @@ button {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  background: hsla(28, 32%, 17%, 0.45);
+  backdrop-filter: blur(3px);
   z-index: 9;
   opacity: 0;
   transition: opacity var(--transition-medium);
@@ -1691,18 +1743,26 @@ button {
 /*  Responsive: Tablet (≤ 1024px)          */
 /* ======================================= */
 @media (max-width: 1024px) {
-  .sidebar {
-    width: 240px;
+  .sidebar-brand {
+    padding: 12px 16px;
   }
 
-  .sidebar-brand {
-    padding: 16px;
+  .brand-name {
+    display: none; /* icon-only brand keeps tabs roomy */
   }
 
   .nav-btn {
-    padding: 10px 14px;
-    font-size: 0.9rem;
-    gap: 12px;
+    padding: 0 12px;
+    font-size: 0.85rem;
+    gap: 8px;
+  }
+
+  .sidebar-footer {
+    padding: 0 14px;
+  }
+
+  .status-indicator .status-text {
+    display: none; /* dot-only status on tighter widths */
   }
 
   .content-container {
@@ -1734,7 +1794,7 @@ button {
     min-height: 100vh;
   }
 
-  /* Sidebar becomes a slide-out drawer */
+  /* Nav band becomes a slide-out drawer again */
   .sidebar {
     position: fixed;
     top: 0;
@@ -1743,9 +1803,11 @@ button {
     height: 100vh;
     height: 100dvh;
     z-index: 20;
+    flex-direction: column;
+    align-items: stretch;
     transform: translateX(-100%);
     transition: transform var(--transition-medium);
-    border-right: 1px solid var(--border-color);
+    border-right: 2px solid var(--accent-gold);
     border-bottom: none;
     box-shadow: var(--shadow-lg);
   }
@@ -1758,8 +1820,19 @@ button {
     display: block;
   }
 
+  .sidebar-brand {
+    padding: 20px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .brand-name {
+    display: inline;
+  }
+
   .sidebar-nav {
     flex-direction: column;
+    align-items: stretch;
     overflow-x: visible;
     overflow-y: auto;
     padding: 16px 12px;
@@ -1770,9 +1843,11 @@ button {
     padding: 14px 16px;
     font-size: 0.95rem;
     gap: 14px;
-    border-radius: var(--border-radius-md);
+    border-radius: var(--border-radius-sm);
     width: 100%;
     text-align: left;
+    border-bottom: none;
+    border-left: 3px solid transparent;
   }
 
   .nav-btn span {
@@ -1780,10 +1855,19 @@ button {
   }
 
   .nav-btn.active {
-    border-left: 3px solid var(--accent-gold);
+    border-left: 3px solid var(--accent-emerald);
     border-bottom: none;
-    padding-left: 13px;
-    padding-bottom: 14px;
+    background-color: var(--accent-emerald-soft);
+  }
+
+  .sidebar-footer {
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    padding: 16px 20px;
+  }
+
+  .status-indicator .status-text {
+    display: inline;
   }
 
   /* Show hamburger */
@@ -1829,6 +1913,7 @@ button {
   .quran-card {
     padding: 16px;
     min-height: 200px;
+    outline-offset: 3px;
   }
 
   .quran-text {
@@ -1877,7 +1962,7 @@ button {
     font-size: 0.8rem;
     margin: 0;
   }
-  
+
   .mushaf-line {
     gap: 2px;
   }
@@ -1947,7 +2032,7 @@ button {
     margin-bottom: 16px;
     justify-content: center !important;
   }
-  
+
   .toolbar-group {
     display: flex;
     flex-wrap: wrap;
@@ -2097,8 +2182,8 @@ button {
   position: absolute;
   top: -6px;
   right: -6px;
-  background: var(--accent-gold);
-  color: var(--bg-primary);
+  background: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
   font-size: 0.65rem;
   font-weight: 700;
   min-width: 18px;
@@ -2108,7 +2193,7 @@ button {
   align-items: center;
   justify-content: center;
   line-height: 1;
-  box-shadow: 0 0 8px hsla(43, 80%, 55%, 0.4);
+  box-shadow: var(--shadow-sm);
 }
 
 .pagemap-history-panel {
@@ -2118,12 +2203,10 @@ button {
   z-index: 500;
   width: 300px;
   max-height: 420px;
-  background: hsla(165, 40%, 8%, 0.97);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid hsla(43, 80%, 55%, 0.15);
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-gold);
   border-radius: var(--border-radius-md);
-  box-shadow: var(--shadow-lg), 0 0 30px hsla(43, 80%, 55%, 0.06);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
   animation: historyPanelSlide 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -2152,12 +2235,12 @@ button {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--accent-gold);
+  color: var(--accent-emerald);
 }
 
 .pagemap-history-clear {
   background: none;
-  border: 1px solid hsla(350, 65%, 50%, 0.3);
+  border: 1px solid hsla(355, 62%, 40%, 0.35);
   color: var(--color-error);
   font-size: 0.7rem;
   padding: 3px 10px;
@@ -2168,7 +2251,7 @@ button {
 }
 
 .pagemap-history-clear:hover {
-  background: hsla(350, 65%, 50%, 0.12);
+  background: hsla(355, 62%, 40%, 0.1);
   border-color: var(--color-error);
 }
 
@@ -2186,7 +2269,7 @@ button {
 }
 
 .pagemap-history-list::-webkit-scrollbar-thumb {
-  background: hsla(165, 30%, 30%, 0.5);
+  background: hsla(35, 30%, 40%, 0.35);
   border-radius: 4px;
 }
 
@@ -2207,7 +2290,7 @@ button {
 }
 
 .pagemap-history-item:hover:not(:disabled) {
-  background: hsla(165, 30%, 16%, 0.6);
+  background: var(--bg-tertiary);
   border-color: var(--border-color);
 }
 
@@ -2216,8 +2299,8 @@ button {
 }
 
 .pagemap-history-item.current {
-  background: var(--accent-gold-glow);
-  border-color: hsla(43, 80%, 55%, 0.2);
+  background: var(--accent-emerald-soft);
+  border-color: hsla(162, 42%, 24%, 0.25);
   cursor: default;
 }
 
@@ -2228,7 +2311,7 @@ button {
 }
 
 .pagemap-history-item.current .pagemap-history-item-page {
-  color: var(--accent-gold);
+  color: var(--accent-emerald);
 }
 
 .pagemap-history-item-time {
@@ -2255,4 +2338,3 @@ button {
     right: -40px;
   }
 }
-
