@@ -30,12 +30,10 @@ export class WritingPracticeModule {
     this.blankAnswers = {}; // Map of "blankIdx" to user input
     this.blankVerified = false;
 
-    // Page-context overview state (only populated when loaded via loadPage)
+    // Page-context state (only populated when loaded via loadPage)
     this.pageData = null;
     this.pageNumber = null;
     this.currentLineWordIdx = 0; // word-tracing cursor for handwriting mode
-    this.ovZoom = 3.75; // page-overview zoom factor (CSS zoom), ~4 lines visible
-    this.pinchStart = null;
 
     // Whole-page writing mode: trace over the entire page and scroll it with a side slider
     this.writeWholePage = false;
@@ -110,8 +108,7 @@ export class WritingPracticeModule {
             text: text,
             lineNumber: l.line,
             // Per-word mushaf glyphs (char + font). word.text is unreliable in the
-            // V1 edition (it can be a single glyph), so the ghost renders these glyphs
-            // to match exactly what appears in the page overview.
+            // V1 edition (it can be a single glyph), so the ghost renders these glyphs.
             glyphWords: wordObjs.map(w => ({ char: w.char, font: w.font, text: w.text }))
           };
         });
@@ -161,7 +158,7 @@ export class WritingPracticeModule {
         </div>
       </div>
 
-      ${this.pageData ? this.renderPageOverviewPanel() : ''}
+      ${this.pageData ? this.renderMushafFontStyles() : ''}
 
       <!-- Main Activity Box -->
       <div class="card" style="width: 100%; max-width: 800px; margin: 0 auto; padding: 0;">
@@ -179,20 +176,11 @@ export class WritingPracticeModule {
     } else if (this.mode === 'typing') {
       this.initTyping();
     }
-
-    if (this.pageData) {
-      this.initPageOverview();
-      // Highlight the starting word in the overview (line highlight alone isn't enough)
-      if (this.mode === 'handwriting' && !this.writeWholePage) {
-        this.setOverviewActiveWord(this.currentLineWordIdx);
-      } else if (this.mode === 'typing') {
-        this.setOverviewActiveWord(this.currentWordIdx);
-      }
-    }
   }
 
-  // --- Page Overview (zoomable/pannable mini mushaf page) ---
-  renderPageOverviewPanel() {
+  // Injects @font-face rules for the mushaf glyph fonts used on this page.
+  // The ghost tracing words render per-word glyphs with these fonts.
+  renderMushafFontStyles() {
     const fonts = new Set();
     this.pageData.lines.forEach(l => l.words.forEach(w => { if (w.font) fonts.add(w.font); }));
 
@@ -211,193 +199,7 @@ export class WritingPracticeModule {
       fontStyles += `@font-face { font-family: '${fontName}'; src: url('${fontUrl}') format('${format}'); }`;
     });
 
-    const currentLineNumber = this.items[this.currentIndex]?.lineNumber;
-
-    let linesHtml = '';
-    this.pageData.lines.forEach(lineObj => {
-      const isActive = lineObj.line === currentLineNumber;
-      let wordCounter = -1;
-      let wordsHtml = '';
-
-      lineObj.words.forEach(word => {
-        if (word.type === 'word') {
-          wordCounter++;
-          const isActiveWord = isActive && wordCounter === this.currentLineWordIdx;
-          wordsHtml += `<span class="overview-word ${isActiveWord ? 'overview-word-active' : ''}" style="font-family: '${word.font}';">${word.char}</span>`;
-        } else if (word.type === 'end') {
-          const verseNum = word.verse_key ? word.verse_key.split(':')[1] : '';
-          wordsHtml += `<span class="overview-word overview-ayah-end">${verseNum}</span>`;
-        } else if (word.type === 'surah_header') {
-          const surahName = this.pageData.surahs.find(s => s.id === word.sura)?.name_arabic || '';
-          wordsHtml += `<span class="overview-surah-header">سُورَةُ ${surahName}</span>`;
-        } else if (word.type === 'bismillah') {
-          wordsHtml += `<span class="overview-bismillah">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</span>`;
-        }
-      });
-
-      linesHtml += `
-        <div class="mushaf-line overview-line ${isActive ? 'active-line' : ''}" data-line="${lineObj.line}">
-          ${wordsHtml}
-        </div>
-      `;
-    });
-
-    return `
-      <style>${fontStyles}</style>
-      <div class="card page-overview-card" style="max-width: 800px; margin: 0 auto 20px auto; padding: 14px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
-          <span style="font-size: 0.85rem; color: var(--text-secondary);">Tap a line to jump to it &middot; pinch/scroll to zoom &middot; drag to pan</span>
-          <div class="toolbar-group" style="gap: 6px;">
-            <button id="ov-zoom-out" class="brush-btn" title="Zoom out">−</button>
-            <button id="ov-zoom-in" class="brush-btn" title="Zoom in">+</button>
-            <button id="ov-zoom-reset" class="btn-outline" style="padding: 6px 12px; font-size: 0.8rem;">Reset</button>
-          </div>
-        </div>
-        <div class="page-overview-viewport" id="page-overview-viewport">
-          <div class="page-overview-inner" id="page-overview-inner">
-            <div class="mushaf-page-grid" id="page-overview-grid">
-              ${linesHtml}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  initPageOverview() {
-    const viewport = document.getElementById('page-overview-viewport');
-    const grid = document.getElementById('page-overview-grid');
-    if (!viewport || !grid) return;
-
-    const currentLineNumber = this.items[this.currentIndex]?.lineNumber;
-    this.ovZoom = this._defaultZoom();
-
-    // Give the grid an explicit base size (one screen) so CSS `zoom` scales it into
-    // a scrollable area. Retry until the viewport has been laid out.
-    this._setupOverviewSizing(currentLineNumber);
-
-    // Mouse wheel = zoom
-    viewport.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      this.zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
-    }, { passive: false });
-
-    // Mouse drag = pan (scroll). Touch panning uses native overflow scrolling.
-    let dragging = false, sx = 0, sy = 0, ssl = 0, sst = 0, moved = false;
-    viewport.addEventListener('pointerdown', (e) => {
-      sx = e.clientX; sy = e.clientY; moved = false;
-      if (e.pointerType === 'mouse') {
-        dragging = true;
-        ssl = viewport.scrollLeft; sst = viewport.scrollTop;
-        viewport.setPointerCapture?.(e.pointerId);
-      }
-    });
-    viewport.addEventListener('pointermove', (e) => {
-      if (Math.abs(e.clientX - sx) > 8 || Math.abs(e.clientY - sy) > 8) moved = true;
-      if (dragging && e.pointerType === 'mouse') {
-        viewport.scrollLeft = ssl - (e.clientX - sx);
-        viewport.scrollTop = sst - (e.clientY - sy);
-      }
-    });
-    viewport.addEventListener('pointerup', () => { dragging = false; });
-    viewport.addEventListener('pointercancel', () => { dragging = false; });
-
-    // Two-finger pinch = zoom (keeps the active line centred)
-    viewport.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2) {
-        this.pinchStart = { dist: this._touchDist(e.touches), zoom: this.ovZoom };
-      }
-    }, { passive: true });
-    viewport.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 2 && this.pinchStart) {
-        e.preventDefault();
-        const factor = this._touchDist(e.touches) / this.pinchStart.dist;
-        this.setZoom(this.pinchStart.zoom * factor);
-      }
-    }, { passive: false });
-    viewport.addEventListener('touchend', (e) => {
-      if (e.touches.length < 2) this.pinchStart = null;
-    });
-
-    // Tap a line to jump to it (ignored if the pointer was dragged/scrolled)
-    viewport.addEventListener('click', (e) => {
-      if (moved) return;
-      const lineEl = e.target.closest('.overview-line');
-      if (!lineEl) return;
-      this.jumpToLine(parseInt(lineEl.dataset.line));
-    });
-
-    document.getElementById('ov-zoom-in')?.addEventListener('click', () => this.zoomBy(1.25));
-    document.getElementById('ov-zoom-out')?.addEventListener('click', () => this.zoomBy(1 / 1.25));
-    document.getElementById('ov-zoom-reset')?.addEventListener('click', () => {
-      this.ovZoom = this._defaultZoom();
-      this.centerOnLine(this.items[this.currentIndex]?.lineNumber);
-    });
-  }
-
-  _touchDist(touches) {
-    return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-  }
-
-  // Default zoom so ~4 lines are visible (readable) regardless of viewport height.
-  _defaultZoom() {
-    const totalLines = this.pageData?.lines.length || 15;
-    const linesVisible = 4;
-    return Math.max(1.5, Math.min(7, totalLines / linesVisible));
-  }
-
-  _setupOverviewSizing(lineNumber, attempt = 0) {
-    const viewport = document.getElementById('page-overview-viewport');
-    const grid = document.getElementById('page-overview-grid');
-    if (!viewport || !grid) return; // panel replaced
-
-    const H = viewport.clientHeight;
-    const W = viewport.clientWidth;
-    if (H > 0 && W > 0) {
-      // Base (unzoomed) grid = exactly one viewport, then `zoom` scales it up
-      grid.style.height = H + 'px';
-      grid.style.width = W + 'px';
-      this.centerOnLine(lineNumber);
-      // Re-center once fonts settle (glyph widths can shift line wrapping slightly)
-      if (attempt === 0 && document.fonts?.ready) {
-        document.fonts.ready.then(() => this.centerOnLine(lineNumber));
-      }
-      return;
-    }
-    if (attempt < 8) {
-      setTimeout(() => this._setupOverviewSizing(lineNumber, attempt + 1), 80);
-    }
-  }
-
-  _applyZoom() {
-    const inner = document.getElementById('page-overview-inner');
-    if (inner) inner.style.zoom = this.ovZoom;
-  }
-
-  setZoom(z) {
-    this.ovZoom = Math.max(1.5, Math.min(7, z));
-    this.centerOnLine(this.items[this.currentIndex]?.lineNumber);
-  }
-
-  zoomBy(factor) {
-    this.setZoom(this.ovZoom * factor);
-  }
-
-  // Applies the current zoom and scrolls so the given line sits in the viewport centre.
-  // Uses live bounding rects, so it's correct regardless of zoom level or font timing.
-  centerOnLine(lineNumber) {
-    if (!lineNumber) return;
-    this._applyZoom();
-    requestAnimationFrame(() => {
-      const viewport = document.getElementById('page-overview-viewport');
-      const grid = document.getElementById('page-overview-grid');
-      const lineEl = grid?.querySelector(`.overview-line[data-line="${lineNumber}"]`);
-      if (!viewport || !lineEl) return;
-      const vp = viewport.getBoundingClientRect();
-      const el = lineEl.getBoundingClientRect();
-      viewport.scrollLeft += (el.left + el.width / 2) - (vp.left + vp.width / 2);
-      viewport.scrollTop += (el.top + el.height / 2) - (vp.top + vp.height / 2);
-    });
+    return `<style>${fontStyles}</style>`;
   }
 
   // Patches the DOM directly (no full re-render) so zoom/pan state survives while tracing words.
@@ -417,8 +219,6 @@ export class WritingPracticeModule {
     const nextBtn = document.getElementById('word-next-btn');
     if (prevBtn) prevBtn.disabled = this.currentLineWordIdx === 0;
     if (nextBtn) nextBtn.disabled = this.currentLineWordIdx === tokens.length - 1;
-
-    this.setOverviewActiveWord(this.currentLineWordIdx);
   }
 
   // Scales the ghost line's font-size so the whole line fits across the canvas width.
@@ -438,48 +238,9 @@ export class WritingPracticeModule {
     }
   }
 
-  setOverviewActiveWord(wordIdx) {
-    if (!this.pageData) return;
-    const activeLine = document.querySelector('.overview-line.active-line');
-    if (!activeLine) return;
-    const overviewWords = activeLine.querySelectorAll('.overview-word:not(.overview-ayah-end)');
-    overviewWords.forEach((el, i) => {
-      el.classList.toggle('overview-word-active', i === wordIdx);
-    });
-  }
-
-  jumpToLine(lineNumber) {
-    // In whole-page writing mode, don't re-render (that would wipe the canvas) —
-    // just scroll the page-write area to the tapped line.
-    if (this.mode === 'handwriting' && this.writeWholePage) {
-      this._scrollPageWriteToLine(lineNumber);
-      return;
-    }
-    const idx = this.items.findIndex(it => it.lineNumber === lineNumber);
-    if (idx === -1 || idx === this.currentIndex) return;
-    this.currentIndex = idx;
-    this.resetStates();
-    this.render();
-    this.setupEvents();
-  }
-
-  // Scrolls the whole-page writing viewport so the given mushaf line is centred.
-  _scrollPageWriteToLine(lineNumber) {
-    const viewport = document.getElementById('pagewrite-viewport');
-    const ghost = document.getElementById('canvas-ghost-page');
-    if (!viewport || !ghost) return;
-    const lineIdx = this.pageData.lines.findIndex(l => l.line === lineNumber);
-    const lineEl = ghost.children[lineIdx];
-    if (!lineEl) return;
-    const vp = viewport.getBoundingClientRect();
-    const el = lineEl.getBoundingClientRect();
-    viewport.scrollTop += (el.top + el.height / 2) - (vp.top + vp.height / 2);
-    this._syncPageSlider();
-  }
-
   // Returns the current line's words as { text, font } tokens. In page mode these are
-  // the mushaf glyphs (so they render identically to the overview and work in V1 too);
-  // in surah mode they're the plain ayah words.
+  // the mushaf glyphs (word.text is unreliable in V1); in surah mode they're the
+  // plain ayah words.
   _currentWordTokens() {
     const q = this.items[this.currentIndex];
     if (q.glyphWords && q.glyphWords.length) {
@@ -895,7 +656,6 @@ export class WritingPracticeModule {
         }
         return `<span class="${cls}">${w}</span>`;
       }).join(' ');
-      this.setOverviewActiveWord(this.currentWordIdx);
     };
 
     renderPrompt();
