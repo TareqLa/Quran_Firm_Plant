@@ -1111,88 +1111,6 @@ button {
   cursor: pointer;
 }
 
-/* Page Overview (zoomable/pannable mini mushaf page in Writing Practice) */
-.page-overview-viewport {
-  position: relative;
-  width: 100%;
-  height: 300px;
-  overflow: auto;
-  border-radius: var(--border-radius-sm);
-  background-color: hsl(44, 50%, 94%);
-  border: 1px solid var(--border-color);
-  /* Allow native one-finger panning; two-finger pinch is handled in JS */
-  touch-action: pan-x pan-y;
-  cursor: grab;
-  scrollbar-width: none; /* Firefox */
-}
-
-.page-overview-viewport::-webkit-scrollbar {
-  display: none; /* Chrome/Safari */
-}
-
-.page-overview-viewport:active {
-  cursor: grabbing;
-}
-
-.page-overview-inner {
-  width: max-content;
-}
-
-.page-overview-inner .mushaf-page-grid {
-  aspect-ratio: auto;
-  box-shadow: none;
-  outline: none;
-  overflow: visible; /* viewport scrolls, not the grid itself */
-  padding: 8px;
-  /* width/height set inline in JS to one viewport; CSS `zoom` scales from there */
-}
-
-.overview-line {
-  transition: opacity var(--transition-fast), background-color var(--transition-fast);
-  opacity: 0.5;
-  cursor: pointer;
-}
-
-.overview-line.active-line {
-  opacity: 1;
-  background-color: hsla(38, 62%, 40%, 0.14);
-  border-radius: 4px;
-}
-
-.overview-word {
-  font-family: var(--font-arabic);
-  font-size: clamp(0.7rem, 2vw, 1rem);
-  color: var(--text-primary);
-  margin: 0 1px;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.overview-word-active {
-  color: var(--accent-gold-hover);
-  font-weight: 700;
-}
-
-.overview-ayah-end {
-  color: var(--accent-gold);
-  font-size: 0.6rem;
-  border: 1px solid var(--accent-gold);
-  border-radius: 50%;
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.overview-surah-header,
-.overview-bismillah {
-  font-family: var(--font-arabic);
-  color: var(--accent-gold);
-  flex-grow: 1;
-  text-align: center;
-}
-
 .brush-btn {
   width: 36px;
   height: 36px;
@@ -2006,10 +1924,6 @@ button {
 
   .canvas-ghost-word {
     font-size: 3.4rem;
-  }
-
-  .page-overview-viewport {
-    height: 300px;
   }
 
   /* Mutashabihat */
