@@ -17,9 +17,47 @@ export class WritingPracticeModule {
     this.ctx = null;
     this.isDrawing = false;
     this.brushSize = 3;
-    this.brushColor = '#e8dcc8'; // Cream text color
     this.eraserMode = false;
+
+    // Paper mode: 'dark' is the ink-slate sheet with cream ink; 'cream' is a
+    // Canva-style cream sheet paired with a black pen for a paper-and-ink feel.
+    this.paperMode = this._loadPaperMode();
+    this.brushColor = this.paperMode === 'cream' ? '#1a1a1a' : '#e8dcc8';
+
+    // Ink color choices (name + hex). White stays the default.
+    this.inkColors = [
+      { name: 'White', value: '#e8dcc8' },
+      { name: 'Black', value: '#1a1a1a' },
+      { name: 'Blue', value: '#4a90e2' },
+      { name: 'Green', value: '#4caf50' },
+      { name: 'Red', value: '#e74c3c' },
+      { name: 'Yellow', value: '#f1c40f' },
+      { name: 'Orange', value: '#e67e22' }
+    ];
+    // Brush thickness presets, so tablet/stylus users can pick a thinner line
+    // and laptop trackpad/mouse users can pick a thicker, easier-to-see one.
+    this.brushSizes = [
+      { name: 'Extra Fine', value: 0.75 },
+      { name: 'Fine', value: 1.25 },
+      { name: 'Thin', value: 2 },
+      { name: 'Medium', value: 4 },
+      { name: 'Thick', value: 7 }
+    ];
     this.showGhost = true;
+    // Ghost display: 'text' shows the actual verse glyphs to trace over;
+    // 'blocks' hides the letters and shows only word-shaped blocks (recall aid).
+    this.ghostMode = 'text';
+    // Visibility multiplier for the ghost trace, adjustable with +/- (0.5 = faintest).
+    this.ghostVisibility = 1;
+    this.ghostVisMin = 0.5;
+    this.ghostVisMax = 5;
+    this.ghostVisStep = 0.5;
+    // Per-line "reveal" wipe (0-100): slides the correct text up over your ink so you
+    // can check what you wrote. Resets to 0 each time you move to a new line.
+    this.revealAmount = 0;
+    // Words the user flagged for review (wrote wrong / hard to remember). Persisted so
+    // the red mark survives reloads and shows on both the line sheet and the whole page.
+    this.wordMarks = this._loadMarks();
     this.writingChecked = false;
 
     // Typing test state
@@ -135,8 +173,36 @@ export class WritingPracticeModule {
     this.typedText = '';
     this.currentWordIdx = 0;
     this.currentLineWordIdx = 0;
+    this.revealAmount = 0;
     this.blankAnswers = {};
     this.blankVerified = false;
+  }
+
+  // --- Review marks: persisted set of "context|lineId|wordIdx" keys ---
+  _loadMarks() {
+    try { return new Set(JSON.parse(localStorage.getItem('writing-marks') || '[]')); }
+    catch { return new Set(); }
+  }
+  _saveMarks() {
+    localStorage.setItem('writing-marks', JSON.stringify([...this.wordMarks]));
+  }
+
+  // --- Paper mode: persisted 'dark' | 'cream' sheet preference ---
+  _loadPaperMode() {
+    try { return localStorage.getItem('writing-paper-mode') === 'cream' ? 'cream' : 'dark'; }
+    catch { return 'dark'; }
+  }
+  _savePaperMode() {
+    try { localStorage.setItem('writing-paper-mode', this.paperMode); } catch { /* ignore */ }
+  }
+  // Stable id for the current line so marks match between the single-line sheet and
+  // the whole-page view: real mushaf line number on a page, else the item index.
+  _lineIdForItem() {
+    const q = this.items[this.currentIndex];
+    return q.lineNumber != null ? `L${q.lineNumber}` : `I${this.currentIndex}`;
+  }
+  _markKey(lineId, wordIdx) {
+    return `${this.currentContext}|${lineId}|${wordIdx}`;
   }
 
   render() {
@@ -227,14 +293,19 @@ export class WritingPracticeModule {
     const wrapper = ghost?.parentElement;
     if (!ghost || !wrapper) return;
 
+    const mark = document.getElementById('word-mark-layer');
     ghost.style.fontSize = ''; // reset to the CSS base size before measuring
+    if (mark) mark.style.fontSize = '';
     const avail = wrapper.clientWidth * 0.94;
     if (!avail) return;
 
     const contentWidth = ghost.scrollWidth;
     if (contentWidth > avail) {
       const baseFs = parseFloat(getComputedStyle(ghost).fontSize);
-      ghost.style.fontSize = (baseFs * avail / contentWidth) + 'px';
+      const fs = (baseFs * avail / contentWidth) + 'px';
+      ghost.style.fontSize = fs;
+      // Keep the dot overlay at the exact same size so every dot stays over its word.
+      if (mark) mark.style.fontSize = fs;
     }
   }
 
@@ -256,13 +327,41 @@ export class WritingPracticeModule {
       : token.text;
   }
 
+  // The revealed answer line under "Check Writing" — marked words carry the same key so
+  // they render red here too (kept in sync when a dot is toggled).
+  _answerLineHtml(tokens) {
+    const lineId = this._lineIdForItem();
+    return tokens.map((t, i) => {
+      const key = this._markKey(lineId, i);
+      const marked = this.wordMarks.has(key) ? ' marked' : '';
+      const style = t.font ? `font-family: '${t.font}';` : '';
+      return `<span class="answer-word${marked}" data-key="${key}" style="${style}">${t.text}</span>`;
+    }).join(' ');
+  }
+
   // The full line, rendered as faint mushaf glyphs, with the current word highlighted —
   // so the user traces over the whole line as if writing directly on the Mushaf.
   _ghostLineHtml(tokens) {
+    const lineId = this._lineIdForItem();
     return tokens.map((t, i) => {
-      const cls = i === this.currentLineWordIdx ? 'ghost-word ghost-word-active' : 'ghost-word';
+      const key = this._markKey(lineId, i);
+      const active = i === this.currentLineWordIdx ? ' ghost-word-active' : '';
+      const marked = this.wordMarks.has(key) ? ' marked' : '';
       const style = t.font ? `font-family: '${t.font}';` : '';
-      return `<span class="${cls}" style="${style}">${t.text}</span>`;
+      return `<span class="ghost-word${active}${marked}" data-key="${key}" style="${style}">${t.text}</span>`;
+    }).join(' ');
+  }
+
+  // A transparent clone of the line that sits *above* the ink canvas, carrying just the
+  // clickable golden review dots. Same glyphs/font/spacing as the trace so each dot lines
+  // up over its word; the words themselves stay invisible so your ink shows through.
+  _markLineHtml(tokens) {
+    const lineId = this._lineIdForItem();
+    return tokens.map((t, i) => {
+      const key = this._markKey(lineId, i);
+      const marked = this.wordMarks.has(key) ? ' marked' : '';
+      const style = t.font ? `font-family: '${t.font}';` : '';
+      return `<span class="ghost-word" style="${style}">${t.text}<button class="word-mark-dot${marked}" data-key="${key}" title="Flag this word for review"></button></span>`;
     }).join(' ');
   }
 
@@ -271,10 +370,22 @@ export class WritingPracticeModule {
       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
       <circle cx="12" cy="12" r="3"></circle></svg>`;
   }
+  _svgPaper() {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="4" y="3" width="16" height="18" rx="1.5"></rect>
+      <path d="M8 8h8M8 12h8M8 16h5"></path></svg>`;
+  }
   _svgEraser() {
     return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M20 20H7L3 16l7-7 7 7-4 4z"></path>
       <path d="M12 9l6-6 4 4-6 6"></path></svg>`;
+  }
+  _svgBlocks() {
+    return `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="3" y="7" width="7" height="4" rx="1"></rect>
+      <rect x="12" y="7" width="9" height="4" rx="1"></rect>
+      <rect x="3" y="14" width="11" height="4" rx="1"></rect>
+      <rect x="16" y="14" width="5" height="4" rx="1"></rect></svg>`;
   }
 
   _renderHandwriting(q) {
@@ -310,8 +421,30 @@ export class WritingPracticeModule {
             ${wordControls}
             ${pageToggle}
             <button id="ghost-toggle" class="brush-btn ${this.showGhost ? 'active' : ''}" title="Toggle Ghost Trace text">${this._svgEye()}</button>
+            <button id="blocks-toggle" class="brush-btn ${this.ghostMode === 'blocks' ? 'active' : ''}" title="${this.ghostMode === 'blocks' ? 'Show verse letters' : 'Hide letters, show word blocks'}">${this._svgBlocks()}</button>
             <button id="eraser-toggle" class="brush-btn ${this.eraserMode ? 'active' : ''}" title="Eraser">${this._svgEraser()}</button>
+            <button id="paper-mode-toggle" class="brush-btn ${this.paperMode === 'cream' ? 'active' : ''}" title="${this.paperMode === 'cream' ? 'Switch to dark ink slate' : 'Switch to cream canvas'}">${this._svgPaper()}</button>
             <button id="canvas-clear" class="btn-outline" style="padding: 6px 12px; font-size: 0.8rem;">Clear</button>
+          </div>
+        </div>
+
+        <div class="canvas-toolbar" style="border-bottom: none; padding-bottom: 0; margin-bottom: 8px;">
+          <div class="toolbar-group ink-color-group">
+            ${this.inkColors.map(c => `
+              <button class="ink-swatch ${this.brushColor === c.value ? 'active' : ''}" data-color="${c.value}" title="${c.name} ink" style="background-color: ${c.value};"></button>
+            `).join('')}
+          </div>
+          <div class="toolbar-group brush-size-group">
+            ${this.brushSizes.map(s => `
+              <button class="brush-size-btn ${this.brushSize === s.value ? 'active' : ''}" data-size="${s.value}" title="${s.name} brush">
+                <span class="brush-size-dot" style="width: ${s.value * 1.6 + 3}px; height: ${s.value * 1.6 + 3}px;"></span>
+              </button>
+            `).join('')}
+          </div>
+          <div class="toolbar-group ghost-vis-group" title="Trace visibility">
+            <button id="ghost-vis-down" class="brush-btn" title="Fainter trace" ${this.ghostVisibility <= this.ghostVisMin ? 'disabled' : ''}>−</button>
+            <span class="ghost-vis-icon">${this._svgEye()}</span>
+            <button id="ghost-vis-up" class="brush-btn" title="Clearer trace" ${this.ghostVisibility >= this.ghostVisMax ? 'disabled' : ''}>+</button>
           </div>
         </div>
 
@@ -321,7 +454,7 @@ export class WritingPracticeModule {
           <button id="check-writing-btn" class="btn-gold">Check Writing</button>
           ${whole ? '' : `
             <div id="writing-answer-box" class="quran-text" style="display: ${this.writingChecked ? 'block' : 'none'}; font-size: 2.1rem; color: var(--accent-gold); margin-top: 8px;">
-              ${tokens.map(t => this._ghostHtml(t)).join(' ')}
+              ${this._answerLineHtml(tokens)}
             </div>`}
         </div>
       </div>
@@ -330,22 +463,32 @@ export class WritingPracticeModule {
 
   _singleLineBodyHtml(tokens) {
     return `
-      <div class="canvas-wrapper">
+      <div class="canvas-wrapper ${this.paperMode === 'cream' ? 'paper-cream' : ''}">
         <canvas id="writing-canvas" class="canvas-sheet"></canvas>
         <canvas id="canvas-lines" class="canvas-bg-lines"></canvas>
         <div class="canvas-ghost-word" id="canvas-ghost-word" style="display: ${this.showGhost ? 'block' : 'none'};">${this._ghostLineHtml(tokens)}</div>
+        <div class="canvas-ghost-word word-mark-layer" id="word-mark-layer">${this._markLineHtml(tokens)}</div>
+      </div>
+      <div class="reveal-row">
+        <span class="reveal-label" title="Slide to lift the correct text over your writing so you can compare">Reveal answer</span>
+        <input type="range" id="reveal-slider" class="reveal-slider" min="0" max="100" value="${this.revealAmount}" aria-label="Reveal the correct text over your writing">
       </div>`;
   }
 
   _wholePageBodyHtml() {
     return `
       <div class="pagewrite-row">
-        <div class="pagewrite-viewport" id="pagewrite-viewport">
+        <div class="pagewrite-viewport ${this.paperMode === 'cream' ? 'paper-cream' : ''}" id="pagewrite-viewport">
           <div class="pagewrite-inner" id="pagewrite-inner">
             <div class="canvas-ghost-page" id="canvas-ghost-page" style="display: ${this.showGhost ? 'block' : 'none'};">
               ${this._ghostPageHtml()}
             </div>
             <canvas id="writing-canvas" class="pagewrite-canvas"></canvas>
+            <!-- Transparent layer above the ink: carries the per-word review dots and
+                 a per-line reveal slider, aligned to the ghost page below. -->
+            <div class="canvas-ghost-page pagewrite-overlay" id="pagewrite-overlay">
+              ${this._pageOverlayHtml()}
+            </div>
           </div>
         </div>
         <div class="pagewrite-slider-col">
@@ -360,9 +503,13 @@ export class WritingPracticeModule {
   _ghostPageHtml() {
     return this.pageData.lines.map(lineObj => {
       let inner = '';
+      let wordIdx = 0; // index among real words on this line — matches the single-line keys
       lineObj.words.forEach(word => {
         if (word.type === 'word') {
-          inner += `<span class="ghost-word" style="font-family: '${word.font}';">${word.char}</span>`;
+          const key = this._markKey(`L${lineObj.line}`, wordIdx);
+          const marked = this.wordMarks.has(key) ? ' marked' : '';
+          inner += `<span class="ghost-word${marked}" data-key="${key}" style="font-family: '${word.font}';">${word.char}</span>`;
+          wordIdx++;
         } else if (word.type === 'end') {
           const verseNum = word.verse_key ? word.verse_key.split(':')[1] : '';
           inner += `<span class="ghost-word ghost-ayah-end">${verseNum}</span>`;
@@ -374,6 +521,36 @@ export class WritingPracticeModule {
         }
       });
       return `<div class="ghost-page-line">${inner}</div>`;
+    }).join('');
+  }
+
+  // Transparent twin of the ghost page, laid over the ink canvas. Identical layout
+  // (same glyphs/fonts) so each golden dot sits over its word; the words stay invisible
+  // until revealed. Each line with words gets its own right-to-left reveal slider.
+  _pageOverlayHtml() {
+    return this.pageData.lines.map(lineObj => {
+      let inner = '';
+      let wordIdx = 0;
+      lineObj.words.forEach(word => {
+        if (word.type === 'word') {
+          const key = this._markKey(`L${lineObj.line}`, wordIdx);
+          const marked = this.wordMarks.has(key) ? ' marked' : '';
+          inner += `<span class="ghost-word${marked}" data-key="${key}" style="font-family: '${word.font}';">${word.char}<button class="word-mark-dot${marked}" data-key="${key}" title="Flag this word for review"></button></span>`;
+          wordIdx++;
+        } else if (word.type === 'end') {
+          const verseNum = word.verse_key ? word.verse_key.split(':')[1] : '';
+          inner += `<span class="ghost-word ghost-ayah-end">${verseNum}</span>`;
+        } else if (word.type === 'surah_header') {
+          const surahName = this.pageData.surahs.find(s => s.id === word.sura)?.name_arabic || '';
+          inner += `<span class="ghost-page-surah">سُورَةُ ${surahName}</span>`;
+        } else if (word.type === 'bismillah') {
+          inner += `<span class="ghost-page-bismillah">بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</span>`;
+        }
+      });
+      const slider = wordIdx > 0
+        ? `<input type="range" class="pageline-reveal" data-line="${lineObj.line}" min="0" max="100" value="0" aria-label="Reveal line ${lineObj.line} over your writing">`
+        : '';
+      return `<div class="ghost-page-line" data-line="${lineObj.line}">${inner}${slider}</div>`;
     }).join('');
   }
 
@@ -464,13 +641,52 @@ export class WritingPracticeModule {
     return '';
   }
 
+  // Applies the ghost trace settings (visibility multiplier + block/text mode)
+  // to whichever ghost container is currently mounted. A CSS variable scales the
+  // per-word opacities so + / − can push the trace fainter or clearer.
+  _applyGhostSettings() {
+    // Apply to every ghost layer, including the transparent dot overlay, so block mode's
+    // extra padding matches on both and the dots stay aligned over their words.
+    this.container.querySelectorAll('.canvas-ghost-word, .canvas-ghost-page').forEach(ghost => {
+      ghost.style.setProperty('--ghost-vis', this.ghostVisibility);
+      ghost.classList.toggle('ghost-blocks', this.ghostMode === 'blocks');
+    });
+  }
+
+  // Slides the correct text up over the ink so the user can compare. A right-to-left
+  // wipe (RTL reading order) governed by the reveal slider; 0 = hidden below the ink.
+  _applyReveal() {
+    const ghost = document.getElementById('canvas-ghost-word');
+    if (!ghost) return;
+    const v = this.revealAmount;
+    if (v > 0) {
+      ghost.classList.add('revealing');
+      ghost.style.clipPath = `inset(0 0 0 ${100 - v}%)`;
+    } else {
+      ghost.classList.remove('revealing');
+      ghost.style.clipPath = '';
+    }
+  }
+
+  // Whole-page reveal: lights up the first N words (from the right) of one line over
+  // the ink, where N grows as the line's slider slides right-to-left.
+  _revealPageLine(lineNum, pct) {
+    const lineEl = this.container.querySelector(`.pagewrite-overlay .ghost-page-line[data-line="${lineNum}"]`);
+    if (!lineEl) return;
+    const words = lineEl.querySelectorAll('.ghost-word[data-key]');
+    const n = Math.round((pct / 100) * words.length);
+    words.forEach((w, i) => w.classList.toggle('revealed', i < n));
+  }
+
   // --- Handwriting Canvas logic ---
   initCanvas() {
     this.canvas = document.getElementById('writing-canvas');
     if (!this.canvas) return;
 
     this.ctx = this.canvas.getContext('2d');
-    
+    this._applyGhostSettings();
+    this._applyReveal();
+
     // Make canvas responsive to its bounds
     const resize = () => {
       const rect = this.canvas.parentNode.getBoundingClientRect();
@@ -521,6 +737,7 @@ export class WritingPracticeModule {
     if (!this.canvas || !viewport || !inner) return;
 
     this.ctx = this.canvas.getContext('2d');
+    this._applyGhostSettings();
 
     // Size the canvas to the full rendered page so strokes are anchored to it and
     // preserved while scrolling. Re-run once fonts settle (glyph widths change height).
@@ -753,14 +970,108 @@ export class WritingPracticeModule {
       ghostToggle?.addEventListener('click', () => {
         this.showGhost = !this.showGhost;
         ghostToggle.classList.toggle('active', this.showGhost);
-        const ghost = this.container.querySelector('.canvas-ghost-word, .canvas-ghost-page');
+        // Hide only the faint trace layer — keep the dot overlay so words stay markable.
+        const ghost = document.getElementById('canvas-ghost-word') || document.getElementById('canvas-ghost-page');
         if (ghost) ghost.style.display = this.showGhost ? 'block' : 'none';
+      });
+
+      // Reveal slider: lift the correct text over the ink to self-check (single-line mode)
+      const revealSlider = document.getElementById('reveal-slider');
+      revealSlider?.addEventListener('input', () => {
+        this.revealAmount = parseInt(revealSlider.value, 10) || 0;
+        this._applyReveal();
+      });
+
+      // Per-line reveal sliders on the whole-page sheet
+      this.container.querySelectorAll('.pageline-reveal').forEach(sl => {
+        sl.addEventListener('input', () => {
+          this._revealPageLine(sl.dataset.line, parseInt(sl.value, 10) || 0);
+        });
+        // Don't let a drag on the slider scribble on the canvas underneath
+        sl.addEventListener('pointerdown', (e) => e.stopPropagation());
+      });
+
+      // Golden review dots: click to flag/unflag a word as red across all views
+      this.container.querySelectorAll('.word-mark-dot').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const key = dot.dataset.key;
+          const nowMarked = !this.wordMarks.has(key);
+          if (nowMarked) this.wordMarks.add(key); else this.wordMarks.delete(key);
+          this._saveMarks();
+          // Patch every element carrying this key (dot, faint trace word, answer word)
+          // so the red state updates without a re-render that would wipe the ink.
+          this.container.querySelectorAll(`[data-key="${CSS.escape(key)}"]`)
+            .forEach(el => el.classList.toggle('marked', nowMarked));
+        });
+      });
+
+      // Toggle ghost display between real verse letters and word-shaped blocks
+      const blocksToggle = document.getElementById('blocks-toggle');
+      blocksToggle?.addEventListener('click', () => {
+        this.ghostMode = this.ghostMode === 'blocks' ? 'text' : 'blocks';
+        blocksToggle.classList.toggle('active', this.ghostMode === 'blocks');
+        blocksToggle.title = this.ghostMode === 'blocks' ? 'Show verse letters' : 'Hide letters, show word blocks';
+        this._applyGhostSettings();
+      });
+
+      // Increase / decrease the visibility of the ghost trace
+      const applyVis = () => {
+        this._applyGhostSettings();
+        const down = document.getElementById('ghost-vis-down');
+        const up = document.getElementById('ghost-vis-up');
+        if (down) down.disabled = this.ghostVisibility <= this.ghostVisMin;
+        if (up) up.disabled = this.ghostVisibility >= this.ghostVisMax;
+      };
+      document.getElementById('ghost-vis-down')?.addEventListener('click', () => {
+        this.ghostVisibility = Math.max(this.ghostVisMin, this.ghostVisibility - this.ghostVisStep);
+        applyVis();
+      });
+      document.getElementById('ghost-vis-up')?.addEventListener('click', () => {
+        this.ghostVisibility = Math.min(this.ghostVisMax, this.ghostVisibility + this.ghostVisStep);
+        applyVis();
       });
 
       const eraserToggle = document.getElementById('eraser-toggle');
       eraserToggle?.addEventListener('click', () => {
         this.eraserMode = !this.eraserMode;
         eraserToggle.classList.toggle('active', this.eraserMode);
+      });
+
+      // Cream canvas toggle: swaps the dark ink-slate sheet for a cream sheet
+      // and switches the standard pen to black so new strokes stay legible.
+      const paperModeToggle = document.getElementById('paper-mode-toggle');
+      paperModeToggle?.addEventListener('click', () => {
+        this.paperMode = this.paperMode === 'cream' ? 'dark' : 'cream';
+        this._savePaperMode();
+        this.brushColor = this.paperMode === 'cream' ? '#1a1a1a' : '#e8dcc8';
+
+        this.container.querySelectorAll('.canvas-wrapper, .pagewrite-viewport').forEach(el => {
+          el.classList.toggle('paper-cream', this.paperMode === 'cream');
+        });
+        paperModeToggle.classList.toggle('active', this.paperMode === 'cream');
+        paperModeToggle.title = this.paperMode === 'cream' ? 'Switch to dark ink slate' : 'Switch to cream canvas';
+        this.container.querySelectorAll('.ink-swatch').forEach(b => {
+          b.classList.toggle('active', b.dataset.color === this.brushColor);
+        });
+      });
+
+      // Ink color swatches
+      this.container.querySelectorAll('.ink-swatch').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.brushColor = btn.dataset.color;
+          this.container.querySelectorAll('.ink-swatch').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+        });
+      });
+
+      // Brush thickness presets
+      this.container.querySelectorAll('.brush-size-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          this.brushSize = parseFloat(btn.dataset.size);
+          this.container.querySelectorAll('.brush-size-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+        });
       });
 
       // Toggle whole-page writing mode

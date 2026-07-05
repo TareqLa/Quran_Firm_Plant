@@ -6,6 +6,7 @@ import { SURAH_LIST } from '../components/surah-selector.js';
 import { normalizeArabic, levenshteinDistance } from '../utils/normalize.js';
 import { audioPlayer } from '../components/audio-player.js';
 import { quranASR, QuranASR } from '../utils/asr.js';
+import { getAsrEngine, setAsrEngine } from '../utils/asr-engine-pref.js';
 
 export class RecitationQuizModule {
   constructor(contentContainerId) {
@@ -29,8 +30,11 @@ export class RecitationQuizModule {
     this.isTranscribing = false;
     this.recordedText = '';
 
-    // Prefer the on-device Tarteel Whisper model; browser SpeechRecognition is the fallback
-    this.useWhisper = QuranASR.isSupported();
+    // Two selectable engines while we test/tune both (see asr-engine-pref.js):
+    // browser SpeechRecognition (fast, cloud-based, default) or the on-device
+    // Tarteel Whisper model (offline, currently slower/less accurate).
+    this.whisperSupported = QuranASR.isSupported();
+    this.useWhisper = this.whisperSupported && getAsrEngine() === 'whisper';
     this.initSpeechRecognition();
   }
 
@@ -261,6 +265,15 @@ export class RecitationQuizModule {
           <div id="quiz-transcription" style="font-size: 1rem; color: var(--text-secondary); font-style: italic;">
             Tap microphone and recite the next verse...
           </div>
+
+          ${this.recognition && this.whisperSupported ? `
+          <div style="display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-muted);">
+            <span>Recognition engine (testing):</span>
+            <button id="quiz-engine-toggle" class="btn-outline" style="padding: 3px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm);">
+              ${this.useWhisper ? 'On-device Whisper' : 'Browser (live)'}
+            </button>
+          </div>
+          ` : ''}
         </div>
 
         <div id="quiz-recite-feedback" class="card" style="display: ${this.answered ? 'block' : 'none'}; text-align: center; margin-top: 20px;">
@@ -415,6 +428,14 @@ export class RecitationQuizModule {
         } else {
           this.recognition.start();
         }
+      });
+
+      document.getElementById('quiz-engine-toggle')?.addEventListener('click', () => {
+        if (this.isRecording || this.isTranscribing) return; // don't swap mid-recording
+        this.useWhisper = !this.useWhisper;
+        setAsrEngine(this.useWhisper ? 'whisper' : 'browser');
+        const btn = document.getElementById('quiz-engine-toggle');
+        if (btn) btn.innerText = this.useWhisper ? 'On-device Whisper' : 'Browser (live)';
       });
     }
 

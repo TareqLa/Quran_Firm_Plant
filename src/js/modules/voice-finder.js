@@ -5,6 +5,7 @@ import { db } from '../data/db.js';
 import { findClosestVerse } from '../utils/normalize.js';
 import { audioPlayer } from '../components/audio-player.js';
 import { quranASR, QuranASR } from '../utils/asr.js';
+import { getAsrEngine, setAsrEngine } from '../utils/asr-engine-pref.js';
 
 const HISTORY_KEY = 'voice-search-history';
 const FAVORITES_KEY = 'voice-favorites';
@@ -20,8 +21,11 @@ export class VoiceFinderModule {
     this.allTranscripts = []; // Store all alternative transcripts for better matching
     this.activeTab = 'none'; // 'none' | 'history' | 'favorites'
 
-    // Prefer the on-device Tarteel Whisper model; browser SpeechRecognition is the fallback
-    this.useWhisper = QuranASR.isSupported();
+    // Two selectable engines while we test/tune both (see asr-engine-pref.js):
+    // browser SpeechRecognition (fast, cloud-based, default) or the on-device
+    // Tarteel Whisper model (offline, currently slower/less accurate).
+    this.whisperSupported = QuranASR.isSupported();
+    this.useWhisper = this.whisperSupported && getAsrEngine() === 'whisper';
     this.initSpeechRecognition();
   }
 
@@ -351,6 +355,15 @@ export class VoiceFinderModule {
 
         <div id="voice-status-text" class="voice-status">Tap the microphone and recite a verse</div>
 
+        ${this.recognition && this.whisperSupported ? `
+        <div class="vf-engine-switch" style="display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 12px; font-size: 0.8rem; color: var(--text-muted);">
+          <span>Recognition engine (testing):</span>
+          <button id="vf-engine-toggle" class="btn-outline" style="padding: 3px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm);">
+            ${this.useWhisper ? 'On-device Whisper' : 'Browser (live)'}
+          </button>
+        </div>
+        ` : ''}
+
         <!-- Live Transcription Display -->
         <div id="voice-transcription-output" class="transcription-box placeholder">
           Spoken recitation will appear here...
@@ -497,6 +510,14 @@ export class VoiceFinderModule {
   // --- Events ---
   setupEvents() {
     document.getElementById('voice-mic-trigger')?.addEventListener('click', () => this.toggleListening());
+
+    document.getElementById('vf-engine-toggle')?.addEventListener('click', () => {
+      if (this.isListening || this.isTranscribing) return; // don't swap mid-recording
+      this.useWhisper = !this.useWhisper;
+      setAsrEngine(this.useWhisper ? 'whisper' : 'browser');
+      const btn = document.getElementById('vf-engine-toggle');
+      if (btn) btn.innerText = this.useWhisper ? 'On-device Whisper' : 'Browser (live)';
+    });
 
     // Manual search button
     const handleManualSearch = () => {

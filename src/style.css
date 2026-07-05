@@ -709,6 +709,76 @@ button {
   border-color: transparent;
 }
 
+/* Partial reveal (reading slider): the right part of the word is visible,
+   the left part still shows the silhouette block. --reveal-pct is the
+   revealed fraction, measured from the right (reading direction). */
+.mushaf-word-box.partial {
+  color: var(--text-primary);
+  background-color: transparent;
+  background-image: linear-gradient(to left, transparent 0 var(--reveal-pct, 0%), var(--bg-tertiary) var(--reveal-pct, 0%));
+}
+
+.mushaf-word-box.partial .word-glyph {
+  clip-path: inset(-40% 0 -40% calc(100% - var(--reveal-pct, 0%)));
+}
+
+/* Per-line reading slider: sits on the line's bottom edge; drag right-to-left
+   at your reading pace to unhide the line gradually. */
+.line-reveal-slider {
+  position: absolute;
+  left: 6px;
+  bottom: -8px;
+  width: calc(100% - 12px); /* JS overrides left/width to match the word span */
+  height: 14px;
+  margin: 0;
+  z-index: 5;
+  direction: rtl; /* value 0 sits at the right, matching reading direction */
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity var(--transition-fast);
+}
+
+.line-reveal-slider:hover,
+.line-reveal-slider:active {
+  opacity: 1;
+}
+
+.line-reveal-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: hsla(38, 62%, 40%, 0.3);
+}
+
+.line-reveal-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--accent-gold);
+  border: 2px solid hsl(44, 60%, 96%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.line-reveal-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: hsla(38, 62%, 40%, 0.3);
+}
+
+.line-reveal-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent-gold);
+  border: 2px solid hsl(44, 60%, 96%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
 .mushaf-word-box.marked-forgotten {
   border: 1px solid var(--color-error);
   background-color: hsla(355, 62%, 40%, 0.10);
@@ -967,6 +1037,30 @@ button {
   opacity: 0.15;
 }
 
+/* Cream "canva" mode: a light paper sheet paired with a black standard pen,
+   as an alternative to the dark ink-slate default. Ghost text switches to a
+   dark ink tone so the trace stays legible against the lighter surface. */
+.canvas-wrapper.paper-cream,
+.pagewrite-viewport.paper-cream {
+  background-color: hsl(42, 48%, 93%);
+  border-color: var(--accent-gold);
+}
+
+.paper-cream .ghost-word,
+.paper-cream .ghost-page-surah,
+.paper-cream .ghost-page-bismillah {
+  color: hsl(28, 32%, 30%);
+}
+
+.paper-cream .ghost-word-active {
+  color: hsl(28, 55%, 18%);
+}
+
+.paper-cream .ghost-blocks .ghost-word {
+  color: transparent;
+  background-color: hsl(28, 32%, 30%);
+}
+
 .canvas-ghost-word {
   position: absolute;
   top: 50%;
@@ -985,14 +1079,144 @@ button {
 
 .canvas-ghost-word .ghost-word {
   color: hsl(43, 55%, 96%);
-  opacity: 0.14;
+  opacity: calc(0.14 * var(--ghost-vis, 1));
   margin: 0 0.12em;
   transition: opacity var(--transition-fast), color var(--transition-fast);
 }
 
 .canvas-ghost-word .ghost-word-active {
   color: hsl(43, 80%, 70%);
-  opacity: 0.55;
+  opacity: calc(0.55 * var(--ghost-vis, 1));
+}
+
+/* Block mode: hide the letters, keep each word as a rounded block sized to the
+   glyph so the user can practice recall from word shape/position alone. */
+.canvas-ghost-word.ghost-blocks .ghost-word,
+.canvas-ghost-page.ghost-blocks .ghost-word {
+  color: transparent;
+  background-color: hsl(43, 55%, 96%);
+  border-radius: 4px;
+  padding: 0.05em 0.28em;
+}
+
+.canvas-ghost-word.ghost-blocks .ghost-word-active {
+  background-color: hsl(43, 80%, 70%);
+}
+
+.canvas-ghost-page.ghost-blocks .ghost-ayah-end {
+  color: hsl(43, 80%, 70%); /* keep ayah numbers legible even in block mode */
+  background: none;
+}
+
+/* Words flagged for review render red everywhere they appear (higher specificity
+   than the active/faint rules so the flag always wins). */
+.canvas-ghost-word .ghost-word.marked,
+.canvas-ghost-page .ghost-word.marked {
+  color: hsl(2, 78%, 60%) !important;
+  opacity: calc(0.6 * var(--ghost-vis, 1));
+}
+
+.canvas-ghost-word.ghost-blocks .ghost-word.marked,
+.canvas-ghost-page.ghost-blocks .ghost-word.marked {
+  background-color: hsl(2, 78%, 60%) !important;
+}
+
+.answer-word.marked {
+  color: hsl(2, 78%, 60%);
+}
+
+/* Reveal wipe: raise the trace above the ink, brighten it and let the ink show
+   through so the user can compare their writing to the correct text. */
+.canvas-ghost-word.revealing {
+  z-index: 5;
+}
+
+/* Revealed correct text renders as a bright hollow outline (not a solid fill), so it
+   stays visually distinct from the user's solid ink whatever colour they picked. */
+.canvas-ghost-word.revealing .ghost-word {
+  color: transparent !important;
+  opacity: 1 !important;
+  -webkit-text-stroke: 1.6px hsl(157, 85%, 52%);
+  text-stroke: 1.6px hsl(157, 85%, 52%);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 0 3px hsla(157, 90%, 45%, 0.9));
+  text-shadow: none;
+}
+
+.canvas-ghost-word.revealing .ghost-word.marked {
+  -webkit-text-stroke-color: hsl(2, 90%, 62%);
+  text-stroke-color: hsl(2, 90%, 62%);
+  filter: drop-shadow(0 0 3px hsla(2, 90%, 50%, 0.9));
+}
+
+/* Transparent dot overlay: sits above the ink so its golden review dots are
+   clickable, while the (invisible) words keep the exact layout of the trace. */
+.word-mark-layer {
+  z-index: 4;
+  pointer-events: none;
+}
+
+.word-mark-layer .ghost-word {
+  color: transparent !important;
+  opacity: 1 !important;
+  position: relative;
+}
+
+.word-mark-layer.ghost-blocks .ghost-word {
+  background-color: transparent !important;
+}
+
+.word-mark-dot {
+  position: absolute;
+  top: -0.85em;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background-color: var(--accent-gold);
+  border: 1px solid hsl(43, 60%, 30%);
+  box-shadow: 0 0 4px hsla(43, 90%, 55%, 0.7);
+  cursor: pointer;
+  padding: 0;
+  pointer-events: auto;
+  opacity: 0.85;
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+
+.word-mark-dot:hover {
+  transform: translateX(-50%) scale(1.4);
+  opacity: 1;
+}
+
+.word-mark-dot.marked {
+  background-color: hsl(2, 78%, 58%);
+  border-color: hsl(2, 60%, 30%);
+  box-shadow: 0 0 6px hsla(2, 90%, 55%, 0.85);
+  opacity: 1;
+}
+
+/* Reveal slider row under the writing sheet */
+.reveal-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.reveal-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.reveal-slider {
+  flex: 1;
+  direction: rtl; /* thumb starts at the right and moves left → RTL reveal */
+  accent-color: var(--accent-gold);
+  cursor: pointer;
 }
 
 /* Whole-page writing: trace the full page, scroll with the side slider */
@@ -1040,9 +1264,11 @@ button {
   flex-direction: row-reverse; /* words[0] on the right → correct RTL reading order */
   justify-content: space-between;
   align-items: center;
-  min-height: 52px;
+  min-height: 68px;
   border-bottom: 1px dashed hsla(43, 70%, 70%, 0.15);
-  padding: 0 2px;
+  /* top padding gives the review dots headroom; bottom padding reserves a lane
+     for the per-line reveal slider so neither overlaps the words */
+  padding: 14px 2px 16px;
   gap: 2px;
 }
 
@@ -1050,12 +1276,12 @@ button {
   font-family: var(--font-arabic);
   font-size: clamp(1.2rem, 5vw, 1.9rem);
   color: hsl(43, 55%, 96%);
-  opacity: 0.16;
+  opacity: calc(0.16 * var(--ghost-vis, 1));
   line-height: 1;
 }
 
 .canvas-ghost-page .ghost-ayah-end {
-  opacity: 0.35;
+  opacity: calc(0.35 * var(--ghost-vis, 1));
   color: hsl(43, 80%, 70%);
   font-family: var(--font-sans);
   font-size: 0.7rem;
@@ -1074,7 +1300,7 @@ button {
   font-family: var(--font-arabic);
   font-size: clamp(1rem, 4vw, 1.6rem);
   color: hsl(43, 80%, 70%);
-  opacity: 0.25;
+  opacity: calc(0.25 * var(--ghost-vis, 1));
   flex-grow: 1;
   text-align: center;
 }
@@ -1087,6 +1313,111 @@ button {
   z-index: 2;
   cursor: crosshair;
   touch-action: none; /* touch draws; scrolling is via the side slider */
+}
+
+/* Overlay layer above the page ink: mirrors the ghost page but stays invisible,
+   exposing only the clickable review dots and per-line reveal sliders. */
+.pagewrite-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 4;
+  pointer-events: none; /* let strokes fall through to the canvas… */
+}
+
+.pagewrite-overlay .ghost-page-line {
+  position: relative;
+  /* keep the 1px divider height for exact vertical alignment with the trace,
+     but hide it so the dashed line isn't doubled */
+  border-bottom-color: transparent;
+}
+
+/* Words in the overlay are invisible (the real trace shows below) until revealed. */
+.pagewrite-overlay .ghost-word,
+.pagewrite-overlay .ghost-ayah-end,
+.pagewrite-overlay .ghost-page-surah,
+.pagewrite-overlay .ghost-page-bismillah {
+  color: transparent !important;
+  opacity: 1 !important;
+  border-color: transparent !important;
+  position: relative;
+}
+
+.pagewrite-overlay.ghost-blocks .ghost-word {
+  background-color: transparent !important;
+}
+
+.pagewrite-overlay .ghost-word.revealed {
+  color: transparent !important;
+  -webkit-text-stroke: 1.4px hsl(157, 85%, 52%);
+  text-stroke: 1.4px hsl(157, 85%, 52%);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 0 3px hsla(157, 90%, 45%, 0.9));
+  text-shadow: none;
+}
+
+.pagewrite-overlay .ghost-word.revealed.marked {
+  -webkit-text-stroke-color: hsl(2, 90%, 62%);
+  text-stroke-color: hsl(2, 90%, 62%);
+  filter: drop-shadow(0 0 3px hsla(2, 90%, 50%, 0.9));
+}
+
+/* Per-line reveal slider: a thin custom track spanning exactly the words' width,
+   tucked into the line's bottom padding lane so it never covers the glyphs. */
+.pageline-reveal {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  left: 2px;   /* match .ghost-page-line horizontal padding = words' extent */
+  right: 2px;
+  bottom: 3px;
+  width: auto;
+  height: 12px;
+  margin: 0;
+  background: transparent;
+  direction: rtl; /* thumb starts at the right, slide left to reveal (RTL) */
+  cursor: pointer;
+  pointer-events: auto; /* …but the sliders themselves are grabbable */
+  opacity: 0.4;
+  transition: opacity var(--transition-fast);
+}
+
+.pagewrite-overlay .ghost-page-line:hover .pageline-reveal,
+.pageline-reveal:focus {
+  opacity: 1;
+}
+
+.pageline-reveal::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: hsla(43, 70%, 65%, 0.35);
+}
+
+.pageline-reveal::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4px; /* center the thumb on the 3px track */
+  border-radius: 50%;
+  border: 1px solid hsl(43, 60%, 30%);
+  background: var(--accent-gold);
+  box-shadow: 0 0 4px hsla(43, 90%, 55%, 0.7);
+}
+
+.pageline-reveal::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: hsla(43, 70%, 65%, 0.35);
+}
+
+.pageline-reveal::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid hsl(43, 60%, 30%);
+  background: var(--accent-gold);
+  box-shadow: 0 0 4px hsla(43, 90%, 55%, 0.7);
 }
 
 .pagewrite-slider-col {
@@ -1133,6 +1464,84 @@ button {
   background-color: var(--accent-emerald);
   color: hsl(43, 55%, 96%);
   border-color: var(--accent-emerald);
+}
+
+.ink-color-group,
+.brush-size-group {
+  padding: 4px 8px;
+  border-radius: var(--border-radius-sm);
+  background-color: var(--bg-tertiary);
+}
+
+.ink-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color);
+  cursor: pointer;
+  padding: 0;
+  transition: all var(--transition-fast);
+}
+
+.ink-swatch:hover {
+  transform: scale(1.12);
+}
+
+.ink-swatch.active {
+  border-color: var(--accent-gold);
+  box-shadow: 0 0 0 2px var(--accent-gold);
+}
+
+.brush-size-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.brush-size-btn:hover {
+  background-color: var(--bg-secondary);
+  border-color: var(--accent-gold);
+}
+
+.brush-size-btn.active {
+  background-color: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+}
+
+.brush-size-dot {
+  border-radius: 50%;
+  background-color: var(--text-secondary);
+}
+
+.brush-size-btn.active .brush-size-dot {
+  background-color: hsl(43, 55%, 96%);
+}
+
+.ghost-vis-group {
+  padding: 4px 8px;
+  border-radius: var(--border-radius-sm);
+  background-color: var(--bg-tertiary);
+}
+
+.ghost-vis-group .brush-btn {
+  width: 28px;
+  height: 28px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ghost-vis-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
 }
 
 /* Typing Mode Styling */

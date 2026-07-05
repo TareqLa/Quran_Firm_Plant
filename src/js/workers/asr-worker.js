@@ -24,9 +24,10 @@ function loadModel() {
       }
     };
 
-    // Prefer quantized weights (small download); fall back to fp32 if the
-    // repo doesn't ship that variant.
-    const dtypes = ['q8', 'fp32'];
+    // Prefer full-precision weights for the best transcription quality; fall
+    // back to the smaller quantized weights if fp32 fails to load (e.g. on a
+    // low-memory device or if the repo doesn't ship that variant).
+    const dtypes = ['fp32', 'q8'];
     let lastError = null;
     for (const dtype of dtypes) {
       try {

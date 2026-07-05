@@ -19,19 +19,6 @@ export class PageMapModule {
     
     this.pageData = null;
     this.wordTranslations = {}; // "surah:ayah:position" -> English gloss, for hover/tap tooltip
-    this.currentSubFeature = 'silhouette'; // 'silhouette', 'connector', 'coordinates', 'first-last'
-    
-    // Line connector game state
-    this.connectorQuestion = null;
-    
-    // Coordinate finder state
-    this.coordQuestion = null;
-    this.coordSelectedLine = null;
-    this.coordIsCorrect = null;
-    
-    // First/last word state
-    this.flQuestion = null;
-    this.flRevealed = false;
 
     // Selected mushaf edition (v1 or v2)
     this.currentEdition = localStorage.getItem('mushaf-edition') || 'v2';
@@ -44,6 +31,7 @@ export class PageMapModule {
 
     // Silhouette study state (merged from Blank Page module)
     this.studyMode = localStorage.getItem('pagemap-study-mode') || 'free'; // 'free' | 'sequential' | 'first-word'
+    this.sliderMode = localStorage.getItem('pagemap-slider-mode') === '1'; // per-line reading reveal sliders
     this.revealedWords = new Set();   // persisted revealed word keys for the current page
     this.wordSequence = [];           // word keys in reading order (for sequential mode & progress)
     this.firstWordAnchors = new Set(); // first word key of each ayah on the page
@@ -149,13 +137,12 @@ export class PageMapModule {
     const hasHistory = history.length > 0;
     
     this.container.innerHTML = `
-      <!-- Sub-feature Toggle Toolbar -->
-      <div class="blank-page-controls" style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <!-- Row 1: Study mode (left) + page actions (right) -->
+      <div class="blank-page-controls" style="margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div class="toolbar-group">
-          <button class="btn-outline sf-btn ${this.currentSubFeature === 'silhouette' ? 'active' : ''}" data-feature="silhouette">Page Silhouette</button>
-          <button class="btn-outline sf-btn ${this.currentSubFeature === 'connector' ? 'active' : ''}" data-feature="connector">Line Connector Game</button>
-          <button class="btn-outline sf-btn ${this.currentSubFeature === 'coordinates' ? 'active' : ''}" data-feature="coordinates">Coordinate Finder</button>
-          <button class="btn-outline sf-btn ${this.currentSubFeature === 'first-last' ? 'active' : ''}" data-feature="first-last">First & Last Word Drill</button>
+          <button class="btn-outline study-mode-btn ${this.studyMode === 'free' ? 'active' : ''}" data-study-mode="free">Free Reveal</button>
+          <button class="btn-outline study-mode-btn ${this.studyMode === 'sequential' ? 'active' : ''}" data-study-mode="sequential">Next Word Guide</button>
+          <button class="btn-outline study-mode-btn ${this.studyMode === 'first-word' ? 'active' : ''}" data-study-mode="first-word">First Word Anchors</button>
         </div>
         <div class="toolbar-group" style="gap: 8px;">
           <!-- Write This Page Button -->
@@ -215,37 +202,21 @@ export class PageMapModule {
         </div>
       </div>
 
+      <!-- Row 2: Reveal controls (centered) -->
+      <div class="blank-page-controls" style="justify-content: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px;">
+        <div class="toolbar-group">
+          <button id="sil-reveal-next-btn" class="btn-gold" ${this.studyMode !== 'sequential' ? 'style="display:none;"' : ''}>Reveal Next Word →</button>
+          <button id="sil-slider-toggle-btn" class="btn-outline ${this.sliderMode ? 'active' : ''}">Reading Sliders</button>
+          <button id="sil-hide-all-btn" class="btn-outline">Hide All</button>
+          <button id="sil-show-all-btn" class="btn-outline">Show All</button>
+        </div>
+      </div>
+
       <!-- Main Display -->
       <div id="pagemap-content-area" style="display: flex; flex-direction: column; align-items: center; width: 100%;">
-        ${this.renderSubFeatureContent()}
+        ${this.renderSilhouette()}
       </div>
     `;
-
-    // Dynamic initializations
-    if (this.currentSubFeature === 'connector' && !this.connectorQuestion) {
-      this.generateConnectorQuestion();
-    }
-    if (this.currentSubFeature === 'coordinates' && !this.coordQuestion) {
-      this.generateCoordinateQuestion();
-    }
-    if (this.currentSubFeature === 'first-last' && !this.flQuestion) {
-      this.generateFirstLastQuestion();
-    }
-  }
-
-  renderSubFeatureContent() {
-    switch (this.currentSubFeature) {
-      case 'silhouette':
-        return this.renderSilhouette();
-      case 'connector':
-        return this.renderConnector();
-      case 'coordinates':
-        return this.renderCoordinates();
-      case 'first-last':
-        return this.renderFirstLast();
-      default:
-        return '';
-    }
   }
 
   // Index the page's words in reading order and find each ayah's first word on this page.
@@ -328,10 +299,96 @@ export class PageMapModule {
       } else {
         this.revealedWords.delete(key);
       }
+      this.clearPartialReveal(el);
       el.classList.toggle('revealed', this.isWordShown(key));
     });
     this.saveRevealed();
     this.updateSilhouetteProgress();
+    this.syncLineSliders();
+  }
+
+  clearPartialReveal(el) {
+    el.classList.remove('partial');
+    el.style.removeProperty('--reveal-pct');
+  }
+
+  // Measure a line's word boxes and stretch the slider track to overlay exactly
+  // the horizontal span the words occupy, so the thumb position maps 1:1 to a
+  // pixel reveal boundary. Returns { rects, right, span } or null.
+  measureSlider(slider) {
+    const lineEl = slider.closest('.mushaf-line');
+    if (!lineEl) return null;
+    const boxes = Array.from(lineEl.querySelectorAll('.mushaf-word-box[data-key]'));
+    if (!boxes.length) return null;
+
+    const lineRect = lineEl.getBoundingClientRect();
+    let right = -Infinity;
+    let left = Infinity;
+    const rects = boxes.map(box => {
+      const r = box.getBoundingClientRect();
+      if (r.right > right) right = r.right;
+      if (r.left < left) left = r.left;
+      return { box, r };
+    });
+    const span = right - left;
+    if (span <= 0) return null;
+
+    // Overlay the slider track precisely on the word area
+    slider.style.left = `${left - lineRect.left}px`;
+    slider.style.right = 'auto';
+    slider.style.width = `${span}px`;
+
+    return { rects, right, left, span };
+  }
+
+  // Slider value (0–1000) corresponding to the current revealed run from the
+  // line's start edge (right side, reading direction).
+  sliderValueFromState(geo) {
+    let f = 0;
+    for (const { box, r } of geo.rects) {
+      if (this.revealedWords.has(box.dataset.key)) {
+        f = (geo.right - r.left) / geo.span; // boundary at this word's left edge
+      } else {
+        break;
+      }
+    }
+    return Math.round(f * 1000);
+  }
+
+  // Reveal words up to fraction f (0 = nothing, 1 = whole line), measured from
+  // the right. The word straddling the boundary is partially revealed so the
+  // reveal edge tracks the thumb exactly.
+  applySliderFraction(geo, f) {
+    geo.rects.forEach(({ box, r }) => {
+      const key = box.dataset.key;
+      const wordRightFrac = (geo.right - r.right) / geo.span;
+      const wordLeftFrac = (geo.right - r.left) / geo.span;
+
+      if (f >= wordLeftFrac - 1e-4) {
+        this.revealedWords.add(key);
+        this.clearPartialReveal(box);
+        box.classList.add('revealed');
+      } else if (f > wordRightFrac) {
+        this.revealedWords.delete(key);
+        box.classList.remove('revealed');
+        box.classList.add('partial');
+        const pct = ((f - wordRightFrac) / (wordLeftFrac - wordRightFrac)) * 100;
+        box.style.setProperty('--reveal-pct', `${pct}%`);
+      } else {
+        this.revealedWords.delete(key);
+        this.clearPartialReveal(box);
+        box.classList.toggle('revealed', this.isWordShown(key));
+      }
+    });
+  }
+
+  // Re-measure every visible slider and snap its thumb to the current reveal
+  // state (used after Hide/Show All, menu actions, resize, and font load).
+  syncLineSliders() {
+    this.container.querySelectorAll('.line-reveal-slider').forEach(slider => {
+      const geo = this.measureSlider(slider);
+      if (geo) slider.value = this.sliderValueFromState(geo);
+    });
   }
 
   updateSilhouetteProgress() {
@@ -425,17 +482,25 @@ export class PageMapModule {
                   data-position="${word.position || ''}"
                   data-text="${word.text}"
                   style="font-family: '${word.font}'; font-size: clamp(1.1rem, 4vw, 1.65rem); line-height: 1; flex-shrink: 1;">
-              ${word.char}
+              <span class="word-glyph">${word.char}</span>
             </span>
           `;
         }
       });
+
+      // Per-line reading slider. Uses a fine 0–1000 range that JS maps to the
+      // line's actual pixel width, so the thumb aligns with the reveal edge.
+      let sliderHtml = '';
+      if (this.sliderMode && lineObj.words.some(w => w.type === 'word')) {
+        sliderHtml = `<input type="range" class="line-reveal-slider" data-line="${lineObj.line}" min="0" max="1000" step="1" value="0">`;
+      }
 
       linesHtml += `
         <div class="mushaf-line" data-line="${lineObj.line}">
           <span class="mushaf-line-number">${lineObj.line}</span>
           ${wordsHtml}
           <span class="mushaf-line-right-number">${lineObj.line}</span>
+          ${sliderHtml}
         </div>
       `;
     });
@@ -452,19 +517,6 @@ export class PageMapModule {
           background-color: rgba(212, 175, 55, 0.12) !important;
         }
       </style>
-      <div class="blank-page-controls" style="justify-content: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
-        <div class="toolbar-group">
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'free' ? 'active' : ''}" data-study-mode="free">Free Reveal</button>
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'sequential' ? 'active' : ''}" data-study-mode="sequential">Next Word Guide</button>
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'first-word' ? 'active' : ''}" data-study-mode="first-word">First Word Anchors</button>
-        </div>
-        <div class="toolbar-group">
-          <button id="sil-reveal-next-btn" class="btn-gold" ${this.studyMode !== 'sequential' ? 'style="display:none;"' : ''}>Reveal Next Word →</button>
-          <button id="sil-hide-all-btn" class="btn-outline">Hide All</button>
-          <button id="sil-show-all-btn" class="btn-outline">Show All</button>
-        </div>
-      </div>
-
       <div class="progress-bar-container" style="width: 100%; max-width: 700px; margin: 0 auto 4px;">
         <div id="sil-progress-bar" class="progress-bar" style="width: ${pct}%"></div>
       </div>
@@ -486,293 +538,7 @@ export class PageMapModule {
     `;
   }
 
-  // --- Sub-feature 2: Line Connector Game ---
-  renderConnector() {
-    if (!this.connectorQuestion) return 'Generating question...';
-
-    const q = this.connectorQuestion;
-    
-    return `
-      <div class="line-connector-card">
-        <div class="line-connector-prompt card">
-          <span class="prompt-label">End of Line ${q.lineIndex}</span>
-          <div class="prompt-verse">${q.leftSnippet} <span class="prompt-word-gold">${q.lastWord}</span></div>
-          <div class="status-indicator" style="justify-content: center; margin-top: 12px;">
-            <span class="status-dot" style="background-color: var(--accent-gold);"></span>
-            <span style="font-size: 0.85rem; text-transform: uppercase;">What is the first word of Line ${q.lineIndex + 1}?</span>
-          </div>
-        </div>
-
-        <div class="line-connector-options">
-          ${q.options.map(opt => `
-            <button class="option-btn" data-option="${opt}">${opt}</button>
-          `).join('')}
-        </div>
-
-        <div id="connector-feedback" class="card" style="display: none; text-align: center;">
-          <h4 id="connector-feedback-title" style="margin-bottom: 8px;"></h4>
-          <p id="connector-feedback-text"></p>
-          <button id="next-connector-btn" class="btn-gold" style="margin-top: 16px;">Next Transition</button>
-        </div>
-      </div>
-    `;
-  }
-
-  generateConnectorQuestion() {
-    // Pick a line that has a next line
-    const maxLine = this.pageData.lines.length;
-    if (maxLine < 2) return;
-
-    // Pick a random line from 1 to maxLine - 1
-    const lineIndex = Math.floor(Math.random() * (maxLine - 1)) + 1;
-    const currentLine = this.pageData.lines.find(l => l.line === lineIndex);
-    const nextLine = this.pageData.lines.find(l => l.line === lineIndex + 1);
-
-    // Get last word of current line
-    const currentLineWords = currentLine.words.filter(w => w.type === 'word');
-    const nextLineWords = nextLine.words.filter(w => w.type === 'word');
-
-    if (currentLineWords.length === 0 || nextLineWords.length === 0) {
-      // Retry
-      this.generateConnectorQuestion();
-      return;
-    }
-
-    const lastWordObj = currentLineWords[currentLineWords.length - 1];
-    const firstWordObj = nextLineWords[0];
-
-    const lastWord = lastWordObj.text;
-    const correctAnswer = firstWordObj.text;
-
-    // Get snippet leading to the last word
-    const leftSnippet = currentLineWords.slice(-3, -1).map(w => w.text).join(' ');
-
-    // Generate incorrect distractors from the page
-    const allWords = [];
-    this.pageData.lines.forEach(l => {
-      l.words.forEach(w => {
-        if (w.type === 'word' && w.text !== correctAnswer && w.text !== lastWord) {
-          allWords.push(w.text);
-        }
-      });
-    });
-
-    // Pick 2 random distractors
-    const uniqueDistractors = [...new Set(allWords)];
-    const distractors = [];
-    while (distractors.length < 2 && uniqueDistractors.length > 0) {
-      const idx = Math.floor(Math.random() * uniqueDistractors.length);
-      distractors.push(uniqueDistractors.splice(idx, 1)[0]);
-    }
-    
-    // Handle edge case of too few words
-    if (distractors.length < 2) {
-      distractors.push('تَفْعَلُونَ');
-      distractors.push('الْعَالَمِينَ');
-    }
-
-    const options = [correctAnswer, ...distractors].sort(() => Math.random() - 0.5);
-
-    this.connectorQuestion = {
-      lineIndex,
-      lastWord,
-      correctAnswer,
-      leftSnippet,
-      options
-    };
-  }
-
-  // --- Sub-feature 3: Verse Coordinate Finder ---
-  renderCoordinates() {
-    if (!this.coordQuestion) return 'Generating question...';
-
-    const q = this.coordQuestion;
-    
-    // Draw 15 lines of blocks (silhouette)
-    let linesHtml = '';
-    this.pageData.lines.forEach((lineObj) => {
-      const isSelected = this.coordSelectedLine === lineObj.line;
-      let lineStyle = 'cursor: pointer;';
-      if (isSelected) {
-        lineStyle += this.coordIsCorrect ? 'background-color: rgba(76, 175, 80, 0.15);' : 'background-color: rgba(244, 67, 54, 0.15);';
-      }
-
-      linesHtml += `
-        <div class="mushaf-line coord-line" data-line="${lineObj.line}" style="${lineStyle}">
-          <span class="mushaf-line-number">${lineObj.line}</span>
-          <!-- Silhouette blocks -->
-          ${lineObj.words.map(w => {
-            const width = w.type === 'end' ? 20 : Math.max(25, w.text.length * 6);
-            const radius = w.type === 'end' ? '50%' : '2px';
-            const border = w.type === 'end' ? '1px solid var(--accent-gold)' : '1px solid var(--border-color)';
-            return `<span style="width: ${width}px; height: 16px; border: ${border}; border-radius: ${radius}; margin: 0 1px; display: inline-block;"></span>`;
-          }).join('')}
-          <span class="mushaf-line-right-number">${lineObj.line}</span>
-        </div>
-      `;
-    });
-
-    return `
-      <div class="line-connector-card">
-        <div class="line-connector-prompt card">
-          <span class="prompt-label">Coordinate Finder</span>
-          <div style="font-size: 1.1rem; font-weight: 600; margin: 12px 0;">Where does this verse begin on Page ${this.currentPage}?</div>
-          <div class="prompt-verse" style="font-size: 1.8rem; margin-bottom: 0;">${q.ayahText}</div>
-          <span class="prompt-label" style="margin-top: 10px; display: block; color: var(--accent-gold);">${q.surahNameEn} : Ayah ${q.ayahNum}</span>
-        </div>
-
-        <div class="mushaf-page-container" style="max-width: 500px;">
-          <div class="mushaf-page-grid" style="padding: 10px;">
-            ${linesHtml}
-          </div>
-        </div>
-
-        <div id="coord-feedback" class="card" style="display: ${this.coordSelectedLine ? 'block' : 'none'}; text-align: center;">
-          <h4 style="color: ${this.coordIsCorrect ? 'var(--color-success)' : 'var(--color-error)'}; margin-bottom: 8px;">
-            ${this.coordIsCorrect ? 'Correct!' : 'Try Again!'}
-          </h4>
-          <p>
-            ${this.coordIsCorrect 
-              ? `Yes! Ayah ${q.ayahNum} starts on Line ${q.correctLine}.` 
-              : `Line ${this.coordSelectedLine} is incorrect. The ayah actually starts on Line ${q.correctLine}.`}
-          </p>
-          <button id="next-coord-btn" class="btn-gold" style="margin-top: 16px;">Next Verse</button>
-        </div>
-      </div>
-    `;
-  }
-
-  async generateCoordinateQuestion() {
-    // Pick an ayah that starts on this page
-    // Gather all verse keys present in the word list of this page
-    const verseKeys = [];
-    this.pageData.lines.forEach(l => {
-      l.words.forEach(w => {
-        if (w.verse_key && !verseKeys.includes(w.verse_key)) {
-          verseKeys.push(w.verse_key);
-        }
-      });
-    });
-
-    if (verseKeys.length === 0) return;
-
-    // Pick a random verse key
-    const verseKey = verseKeys[Math.floor(Math.random() * verseKeys.length)];
-    const [surahNum, ayahNum] = verseKey.split(':').map(Number);
-
-    // Find the first line where this verse key appears
-    let correctLine = null;
-    for (const l of this.pageData.lines) {
-      const match = l.words.find(w => w.verse_key === verseKey);
-      if (match) {
-        correctLine = l.line;
-        break;
-      }
-    }
-
-    if (!correctLine) {
-      this.generateCoordinateQuestion();
-      return;
-    }
-
-    // Load actual text from DB
-    const ayahObj = await db.getAyah(surahNum, ayahNum);
-    if (!ayahObj) {
-      this.generateCoordinateQuestion();
-      return;
-    }
-
-    this.coordQuestion = {
-      surahNum,
-      ayahNum,
-      ayahText: ayahObj.text,
-      surahNameEn: ayahObj.surahNameEn,
-      correctLine
-    };
-  }
-
-  // --- Sub-feature 4: First & Last Word Drill ---
-  renderFirstLast() {
-    if (!this.flQuestion) return 'Generating question...';
-
-    const q = this.flQuestion;
-    
-    return `
-      <div class="line-connector-card" style="max-width: 500px;">
-        <div class="card" style="text-align: center; padding: 40px; min-height: 250px; display: flex; flex-direction: column; justify-content: center; align-items: center;">
-          <span class="prompt-label" style="margin-bottom: 20px;">First & Last Word Drill</span>
-          <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 8px;">Line ${q.lineIndex} on Page ${this.currentPage}</h2>
-          
-          <div style="margin: 24px 0; width: 100%;">
-            <div style="display: flex; justify-content: space-around; width: 100%;">
-              <div>
-                <div style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase;">First Word</div>
-                <div class="quran-text" style="font-size: 2.2rem; color: var(--accent-gold); height: 50px; margin-top: 8px;">
-                  ${this.flRevealed ? q.firstWord : '████'}
-                </div>
-              </div>
-              <div style="border-right: 1px solid var(--border-color); height: 80px;"></div>
-              <div>
-                <div style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase;">Last Word</div>
-                <div class="quran-text" style="font-size: 2.2rem; color: var(--accent-gold); height: 50px; margin-top: 8px;">
-                  ${this.flRevealed ? q.lastWord : '████'}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 12px; margin-top: 16px;">
-            ${!this.flRevealed 
-              ? `<button id="fl-reveal-btn" class="btn-gold">Reveal Answers</button>` 
-              : `<button id="next-fl-btn" class="btn-gold">Next Line</button>`}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  generateFirstLastQuestion() {
-    const maxLine = this.pageData.lines.length;
-    const lineIndex = Math.floor(Math.random() * maxLine) + 1;
-    const lineObj = this.pageData.lines.find(l => l.line === lineIndex);
-
-    const words = lineObj.words.filter(w => w.type === 'word');
-    if (words.length === 0) {
-      this.generateFirstLastQuestion();
-      return;
-    }
-
-    const firstWord = words[0].text;
-    const lastWord = words[words.length - 1].text;
-
-    this.flQuestion = {
-      lineIndex,
-      firstWord,
-      lastWord
-    };
-    this.flRevealed = false;
-  }
-
   setupEvents() {
-    // Toggle sub-features
-    this.container.querySelectorAll('.sf-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this.hideWordTooltip();
-        this.container.querySelectorAll('.sf-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.currentSubFeature = btn.dataset.feature;
-
-        // Reset state for new questions
-        this.connectorQuestion = null;
-        this.coordQuestion = null;
-        this.flQuestion = null;
-        this.coordSelectedLine = null;
-        
-        this.render();
-        this.setupEvents();
-      });
-    });
-    
     // Navigate to Writing Practice
     const writeBtn = document.getElementById('pagemap-write-btn');
     if (writeBtn) {
@@ -837,9 +603,9 @@ export class PageMapModule {
       }, 10);
     }
 
-    // Silhouette block click handler with long press and toggle support
-    if (this.currentSubFeature === 'silhouette') {
-      const grid = this.container.querySelector('.mushaf-page-grid');
+    // Silhouette grid interaction (the only view now, so its handlers always bind)
+    const grid = this.container.querySelector('.mushaf-page-grid');
+    if (grid) {
       let pressTimer = null;
       let isLongPress = false;
       let startX = 0;
@@ -954,17 +720,72 @@ export class PageMapModule {
         this.revealedWords.clear();
         this.saveRevealed();
         this.container.querySelectorAll('.mushaf-word-box[data-key]').forEach(el => {
+          this.clearPartialReveal(el);
           el.classList.toggle('revealed', this.isWordShown(el.dataset.key));
         });
         this.updateSilhouetteProgress();
+        this.syncLineSliders();
       });
 
       document.getElementById('sil-show-all-btn')?.addEventListener('click', () => {
         this.wordSequence.forEach(key => this.revealedWords.add(key));
         this.saveRevealed();
-        this.container.querySelectorAll('.mushaf-word-box[data-key]').forEach(el => el.classList.add('revealed'));
+        this.container.querySelectorAll('.mushaf-word-box[data-key]').forEach(el => {
+          this.clearPartialReveal(el);
+          el.classList.add('revealed');
+        });
         this.updateSilhouetteProgress();
+        this.syncLineSliders();
       });
+
+      // Reading Sliders toggle: adds/removes the per-line reveal sliders
+      document.getElementById('sil-slider-toggle-btn')?.addEventListener('click', () => {
+        this.sliderMode = !this.sliderMode;
+        localStorage.setItem('pagemap-slider-mode', this.sliderMode ? '1' : '0');
+        this.render();
+        this.setupEvents();
+      });
+
+      // Per-line reading sliders: dragging right-to-left sweeps a reveal edge
+      // across the line. The thumb's pixel position is the edge, so the word it
+      // sits over is partially revealed (clipped from its right side) and words
+      // to the right are fully shown — thumb and reveal edge stay aligned.
+      this.container.querySelectorAll('.line-reveal-slider').forEach(slider => {
+        let geo = this.measureSlider(slider);
+        if (geo) slider.value = this.sliderValueFromState(geo);
+
+        const remeasure = () => { geo = this.measureSlider(slider); };
+
+        const apply = () => {
+          if (!geo) remeasure();
+          if (!geo) return;
+          const f = (parseInt(slider.value, 10) || 0) / 1000;
+          this.applySliderFraction(geo, f);
+        };
+
+        // Re-measure when the user grabs the slider (fonts/layout are settled by then)
+        slider.addEventListener('pointerdown', remeasure);
+        slider.addEventListener('input', apply);
+        slider.addEventListener('change', () => {
+          apply();
+          this.saveRevealed();
+          this.updateSilhouetteProgress();
+        });
+      });
+
+      // Keep thumbs aligned as fonts finish loading, on the next frame, and on resize
+      if (this._sliderResizeHandler) {
+        window.removeEventListener('resize', this._sliderResizeHandler);
+        this._sliderResizeHandler = null;
+      }
+      if (this.container.querySelector('.line-reveal-slider')) {
+        this._sliderResizeHandler = () => this.syncLineSliders();
+        window.addEventListener('resize', this._sliderResizeHandler);
+        requestAnimationFrame(() => this.syncLineSliders());
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(() => this.syncLineSliders());
+        }
+      }
 
       // Previous / next page navigation (continuous study across a surah)
       const goToPage = (page) => {
@@ -981,99 +802,13 @@ export class PageMapModule {
       this.updateSilhouetteProgress();
     }
 
-    // Line Connector options click handler
-    if (this.currentSubFeature === 'connector' && this.connectorQuestion) {
-      const feedbackCard = document.getElementById('connector-feedback');
-      const feedbackTitle = document.getElementById('connector-feedback-title');
-      const feedbackText = document.getElementById('connector-feedback-text');
-
-      this.container.querySelectorAll('.option-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const selected = btn.dataset.option;
-          const correct = this.connectorQuestion.correctAnswer;
-          
-          this.container.querySelectorAll('.option-btn').forEach(b => {
-            b.disabled = true;
-            if (b.dataset.option === correct) {
-              b.classList.add('correct');
-            } else if (b.dataset.option === selected) {
-              b.classList.add('incorrect');
-            }
-          });
-
-          feedbackCard.style.display = 'block';
-          if (selected === correct) {
-            feedbackTitle.innerText = 'Correct!';
-            feedbackTitle.style.color = 'var(--color-success)';
-            feedbackText.innerText = `Great! "${correct}" is indeed the first word of Line ${this.connectorQuestion.lineIndex + 1}.`;
-          } else {
-            feedbackTitle.innerText = 'Incorrect';
-            feedbackTitle.style.color = 'var(--color-error)';
-            feedbackText.innerText = `The correct word starting Line ${this.connectorQuestion.lineIndex + 1} is "${correct}".`;
-          }
-        });
-      });
-
-      document.getElementById('next-connector-btn')?.addEventListener('click', () => {
-        this.connectorQuestion = null;
-        this.render();
-        this.setupEvents();
-      });
-    }
-
-    // Coordinate Finder line selector handler
-    if (this.currentSubFeature === 'coordinates' && this.coordQuestion) {
-      this.container.querySelectorAll('.coord-line').forEach(lineEl => {
-        lineEl.addEventListener('click', () => {
-          if (this.coordSelectedLine !== null) return; // Prevent double clicking
-          
-          const lineNum = parseInt(lineEl.dataset.line);
-          const correct = this.coordQuestion.correctLine;
-          
-          this.coordSelectedLine = lineNum;
-          this.coordIsCorrect = (lineNum === correct);
-          
-          this.render();
-          this.setupEvents();
-        });
-      });
-
-      document.getElementById('next-coord-btn')?.addEventListener('click', () => {
-        this.coordQuestion = null;
-        this.coordSelectedLine = null;
-        this.render();
-        this.setupEvents();
-      });
-    }
-
-    // First/Last word drills event handlers
-    if (this.currentSubFeature === 'first-last' && this.flQuestion) {
-      document.getElementById('fl-reveal-btn')?.addEventListener('click', () => {
-        this.flRevealed = true;
-        this.render();
-        this.setupEvents();
-      });
-
-      document.getElementById('next-fl-btn')?.addEventListener('click', () => {
-        this.flQuestion = null;
-        this.render();
-        this.setupEvents();
-      });
-    }
-
     // Mushaf edition select event listener
     const editionSelect = document.getElementById('mushaf-edition-select');
     if (editionSelect) {
       editionSelect.addEventListener('change', (e) => {
         this.currentEdition = e.target.value;
         localStorage.setItem('mushaf-edition', this.currentEdition);
-        
-        // Reset subfeature states
-        this.connectorQuestion = null;
-        this.coordQuestion = null;
-        this.flQuestion = null;
-        this.coordSelectedLine = null;
-        
+
         // Reload layouts with selected edition
         this.loadPage(this.currentPage);
       });
@@ -1082,22 +817,10 @@ export class PageMapModule {
 
   // Scroll to and flash a verse on the currently loaded page. Used when jumping
   // here from another module (e.g. Voice Finder) that located a specific ayah.
-  // Only the silhouette view has per-word verse-key elements, so it switches there
-  // if another sub-feature was active; the flash is purely visual and doesn't
-  // touch persisted reveal state.
+  // The caller invokes this after loadPage() has rendered the silhouette, so the
+  // per-word verse-key elements already exist. The flash is purely visual and
+  // doesn't touch persisted reveal state.
   highlightVerse(verseKey) {
-    if (this.currentSubFeature !== 'silhouette') {
-      this.currentSubFeature = 'silhouette';
-      this.connectorQuestion = null;
-      this.coordQuestion = null;
-      this.flQuestion = null;
-      this.coordSelectedLine = null;
-      this.render();
-      this.setupEvents();
-    }
-
-    // render() above updates innerHTML synchronously, so the elements already
-    // exist in the DOM — no need to wait a frame.
     const words = this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${verseKey}"]`);
     if (words.length === 0) return;
 
