@@ -24,6 +24,20 @@
   --color-error: hsl(355, 62%, 40%);     /* Madder red for errors */
   --color-info: hsl(205, 60%, 36%);      /* Ink blue for notices */
 
+  /* Mistake-type marks: warm hues = recitation recall errors (red = wrong
+     word, orange = forgotten word), cool hues = knowledge errors. Border
+     style doubles as a colorblind-safe encoding (solid/dashed/dotted/double). */
+  --mistake-word: hsl(355, 78%, 44%);
+  --mistake-word-tint: hsla(355, 78%, 50%, 0.22);
+  --mistake-forgotten: hsl(26, 90%, 42%);
+  --mistake-forgotten-tint: hsla(26, 90%, 48%, 0.24);
+  --mistake-haraka: hsl(210, 80%, 42%);
+  --mistake-haraka-tint: hsla(210, 80%, 48%, 0.20);
+  --mistake-pronunciation: hsl(180, 65%, 30%);
+  --mistake-pronunciation-tint: hsla(180, 65%, 36%, 0.22);
+  --mistake-meaning: hsl(280, 60%, 45%);
+  --mistake-meaning-tint: hsla(280, 60%, 50%, 0.20);
+
   /* Layout Transitions */
   --transition-fast: 0.15s ease;
   --transition-medium: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -68,6 +82,7 @@ body {
   font-family: var(--font-sans);
   overflow: hidden;
   height: 100vh;
+  height: 100dvh; /* track the visible viewport so iPad toolbars don't clip the layout */
   width: 100vw;
   -webkit-font-smoothing: antialiased;
 }
@@ -86,6 +101,7 @@ button {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
 }
 
@@ -227,7 +243,8 @@ button {
   padding: 0 32px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 28px;
   border-bottom: 1px solid var(--border-color);
   background-color: hsla(43, 55%, 97%, 0.6);
   backdrop-filter: blur(8px);
@@ -265,7 +282,7 @@ button {
 
 /* Content Container */
 .content-container {
-  padding: 36px 32px;
+  padding: 20px 32px;
   flex-grow: 1;
   overflow-y: auto;
   position: relative;
@@ -273,11 +290,34 @@ button {
   flex-direction: column;
 }
 
-/* Global Quran Selector Dropdown */
+/* Global Quran Selector Dropdown — one attached control: ‹ | Surah | Page | › */
 .quran-selector {
   display: flex;
-  gap: 10px;
-  align-items: center;
+  gap: 0;
+  align-items: stretch;
+}
+
+.quran-selector > .selector-input,
+.quran-selector > .selector-btn {
+  border-radius: 0;
+}
+
+.quran-selector > :not(:first-child) {
+  margin-left: -1px;
+}
+
+.quran-selector > :first-child {
+  border-radius: var(--border-radius-sm) 0 0 var(--border-radius-sm);
+}
+
+.quran-selector > :last-child {
+  border-radius: 0 var(--border-radius-sm) var(--border-radius-sm) 0;
+}
+
+.quran-selector > :hover,
+.quran-selector > :focus {
+  position: relative;
+  z-index: 1;
 }
 
 .selector-input, .selector-btn {
@@ -446,6 +486,86 @@ button {
 .btn-outline:hover {
   background-color: var(--bg-tertiary);
   border-color: var(--accent-gold);
+}
+
+/* Visible on-state for outline buttons used as toggles (Sliders, Translations, History) */
+.btn-outline.active {
+  background-color: hsla(45, 65%, 52%, 0.16);
+  border-color: var(--accent-gold);
+  color: var(--text-primary);
+  box-shadow: inset 0 1px 2px hsla(38, 62%, 30%, 0.15);
+}
+
+/* Segmented pill control: one bordered pill, filled active segment.
+   Same idea as the repetition counter's Verse/Group/Page tabs. */
+.seg-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background-color: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.seg-btn {
+  padding: 7px 15px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all var(--transition-fast);
+}
+
+.seg-btn:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.seg-btn.active {
+  background: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
+  font-weight: 600;
+}
+
+/* View toggles (Sliders / Translations): same pill container, but segments are
+   independent on/off switches with a tinted on-state instead of exclusive tabs. */
+.toggle-btn.active {
+  background-color: hsla(45, 65%, 52%, 0.22);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.toggle-btn.active:hover {
+  background-color: hsla(45, 65%, 52%, 0.3);
+}
+
+/* Small outlined pill buttons (Show all / Hide all next to the progress bar) */
+.btn-quiet {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+}
+
+.btn-quiet:hover {
+  background-color: var(--bg-tertiary);
+  border-color: var(--accent-gold);
+  color: var(--text-primary);
 }
 
 /* Custom Selection Dropdown Modal */
@@ -681,7 +801,7 @@ button {
 
 .mushaf-word-box {
   background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
+  border: 1px solid transparent;
   border-radius: 3px;
   height: 65%;
   margin: 0 2px;
@@ -780,15 +900,97 @@ button {
 }
 
 .mushaf-word-box.marked-forgotten {
-  border: 1px solid var(--color-error);
-  background-color: hsla(355, 62%, 40%, 0.10);
+  --mark-color: var(--mistake-forgotten);
+  --mark-tint: var(--mistake-forgotten-tint);
+  --mark-border-style: solid;
 }
 
-.mushaf-word-box.marked-forgotten.revealed {
-  color: var(--color-error);
-  border-color: var(--color-error);
+.mushaf-word-box.marked-word {
+  --mark-color: var(--mistake-word);
+  --mark-tint: var(--mistake-word-tint);
+  --mark-border-style: dashed;
+}
+
+.mushaf-word-box.marked-haraka {
+  --mark-color: var(--mistake-haraka);
+  --mark-tint: var(--mistake-haraka-tint);
+  --mark-border-style: dotted;
+}
+
+.mushaf-word-box.marked-pronunciation {
+  --mark-color: var(--mistake-pronunciation);
+  --mark-tint: var(--mistake-pronunciation-tint);
+  --mark-border-style: dashed;
+}
+
+.mushaf-word-box.marked-meaning {
+  --mark-color: var(--mistake-meaning);
+  --mark-tint: var(--mistake-meaning-tint);
+  --mark-border-style: double;
+  --mark-border-width: 3px; /* double borders need >=3px to render two lines */
+}
+
+.mushaf-word-box.marked-forgotten,
+.mushaf-word-box.marked-word,
+.mushaf-word-box.marked-haraka,
+.mushaf-word-box.marked-pronunciation,
+.mushaf-word-box.marked-meaning {
+  border: var(--mark-border-width, 2px) var(--mark-border-style) var(--mark-color);
+  background-color: var(--mark-tint);
+  /* Taller box + side padding so the glyph and its harakat sit clear of the border */
+  height: 88%;
+  padding: 0 6px;
+}
+
+.mushaf-word-box.marked-forgotten.revealed,
+.mushaf-word-box.marked-word.revealed,
+.mushaf-word-box.marked-haraka.revealed,
+.mushaf-word-box.marked-pronunciation.revealed,
+.mushaf-word-box.marked-meaning.revealed {
+  color: var(--mark-color);
+  border-color: var(--mark-color);
   background-color: transparent;
   box-shadow: none;
+}
+
+/* Color swatches inside the word context menu */
+.mark-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 11px;
+  border-radius: 3px;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+
+.mark-swatch-forgotten {
+  border: 2px solid var(--mistake-forgotten);
+  background-color: var(--mistake-forgotten-tint);
+}
+
+.mark-swatch-word {
+  border: 2px dashed var(--mistake-word);
+  background-color: var(--mistake-word-tint);
+}
+
+.mark-swatch-haraka {
+  border: 2px dotted var(--mistake-haraka);
+  background-color: var(--mistake-haraka-tint);
+}
+
+.mark-swatch-pronunciation {
+  border: 2px dashed var(--mistake-pronunciation);
+  background-color: var(--mistake-pronunciation-tint);
+}
+
+.mark-swatch-meaning {
+  border: 3px double var(--mistake-meaning);
+  background-color: var(--mistake-meaning-tint);
+}
+
+.context-menu-item.mark-option.active {
+  background-color: var(--bg-tertiary);
+  font-weight: bold;
 }
 
 .mushaf-word-box.verse-locate-flash {
@@ -803,8 +1005,9 @@ button {
 }
 
 .mushaf-word-box.ayah-end-block {
-  color: var(--accent-gold);
-  border-color: var(--accent-gold);
+  position: relative;
+  color: var(--accent-emerald);
+  border: 1.5px solid var(--accent-emerald);
   border-radius: 50%;
   width: clamp(16px, 4vw, 20px);
   height: clamp(16px, 4vw, 20px);
@@ -817,6 +1020,309 @@ button {
   align-items: center;
   justify-content: center;
   background-color: transparent;
+}
+
+/* ============================================
+   PAGE MAP - Repetition Counter Panel
+   ============================================ */
+
+.pagemap-layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+}
+
+.rep-panel {
+  flex: 0 0 250px;
+  position: sticky;
+  top: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm, 8px);
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.rep-panel-head {
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.rep-panel-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent-gold);
+}
+
+.rep-mode-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.rep-mode-tab {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.rep-mode-tab:hover {
+  border-color: var(--accent-gold);
+}
+
+.rep-mode-tab.active {
+  background: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
+}
+
+.rep-target {
+  margin-bottom: 12px;
+  min-height: 34px;
+}
+
+.rep-target-page {
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-primary);
+  padding: 6px 0;
+}
+
+.rep-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.rep-group-fields {
+  display: flex;
+  gap: 8px;
+}
+
+.rep-group-fields .rep-field {
+  flex: 1;
+}
+
+.rep-select {
+  width: 100%;
+  padding: 5px 6px;
+  font-size: 0.85rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.rep-count-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.rep-adjust {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent-gold);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent-gold);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rep-adjust:hover:not(:disabled) {
+  background: var(--accent-gold-glow);
+}
+
+.rep-adjust:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.rep-count {
+  flex: 1;
+  text-align: center;
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rep-count-hint {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.rep-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.rep-actions button {
+  flex: 1;
+}
+
+.rep-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 8px 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.rep-stats strong {
+  color: var(--accent-emerald);
+}
+
+.rep-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 6px 0 4px;
+}
+
+.rep-clear {
+  font-size: 0.72rem;
+  color: var(--color-error);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.rep-history {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* Recent targets on this page: clickable rows that re-select a saved target */
+.rep-recent {
+  max-height: 150px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+.rep-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  padding: 5px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.rep-recent-row:hover {
+  border-color: var(--accent-gold);
+  background: var(--bg-tertiary);
+}
+
+.rep-recent-row.active {
+  border-color: var(--accent-emerald);
+  background: var(--bg-tertiary);
+}
+
+.rep-recent-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rep-recent-total {
+  font-weight: 700;
+  color: var(--accent-emerald);
+  font-variant-numeric: tabular-nums;
+}
+
+.rep-recent-delete {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rep-recent-delete:hover {
+  color: var(--color-error);
+  background: var(--bg-primary);
+}
+
+.rep-history-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  padding: 4px 2px;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.rep-history-count {
+  font-weight: 700;
+  color: var(--accent-emerald);
+}
+
+.rep-history-empty {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 10px 0;
+}
+
+/* Stack the counter panel above the map on narrow screens */
+@media (max-width: 900px) {
+  .pagemap-layout {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .rep-panel {
+    flex: 1 1 auto;
+    position: static;
+    order: -1;
+    width: 100%;
+  }
 }
 
 .mushaf-line-number,
@@ -1046,19 +1552,50 @@ button {
   border-color: var(--accent-gold);
 }
 
-.paper-cream .ghost-word,
-.paper-cream .ghost-page-surah,
-.paper-cream .ghost-page-bismillah {
+/* These selectors repeat the ghost container class so they outrank the default
+   dark-slate rules further down (.canvas-ghost-word .ghost-word etc.), which come
+   later in the file and would otherwise win and leave the trace white-on-white. */
+.paper-cream .canvas-ghost-word .ghost-word,
+.paper-cream .canvas-ghost-page .ghost-word,
+.paper-cream .canvas-ghost-page .ghost-page-surah,
+.paper-cream .canvas-ghost-page .ghost-page-bismillah {
   color: hsl(28, 32%, 30%);
 }
 
-.paper-cream .ghost-word-active {
-  color: hsl(28, 55%, 18%);
+/* Dark ink on light paper reads fainter than white on the dark slate at the
+   same alpha, so cream mode gets a higher base opacity. */
+.paper-cream .canvas-ghost-word .ghost-word {
+  opacity: calc(0.28 * var(--ghost-vis, 1));
 }
 
-.paper-cream .ghost-blocks .ghost-word {
+.paper-cream .canvas-ghost-page .ghost-word {
+  opacity: calc(0.3 * var(--ghost-vis, 1));
+}
+
+.paper-cream .canvas-ghost-word .ghost-word-active {
+  color: hsl(28, 55%, 18%);
+  opacity: calc(0.75 * var(--ghost-vis, 1));
+}
+
+.paper-cream .canvas-ghost-page .ghost-ayah-end {
+  color: hsl(28, 45%, 32%);
+  border-color: hsl(28, 45%, 32%);
+  opacity: calc(0.55 * var(--ghost-vis, 1));
+}
+
+.paper-cream .canvas-ghost-page .ghost-page-surah,
+.paper-cream .canvas-ghost-page .ghost-page-bismillah {
+  opacity: calc(0.45 * var(--ghost-vis, 1));
+}
+
+.paper-cream .canvas-ghost-word.ghost-blocks .ghost-word,
+.paper-cream .canvas-ghost-page.ghost-blocks .ghost-word {
   color: transparent;
   background-color: hsl(28, 32%, 30%);
+}
+
+.paper-cream .canvas-ghost-word.ghost-blocks .ghost-word-active {
+  background-color: hsl(28, 55%, 18%);
 }
 
 .canvas-ghost-word {
@@ -1108,21 +1645,54 @@ button {
   background: none;
 }
 
-/* Words flagged for review render red everywhere they appear (higher specificity
-   than the active/faint rules so the flag always wins). */
+/* Per-mistake-type ink for the writing view (same types as the page map, but
+   brighter than the page-map palette so they read on the dark ink slate).
+   Untyped legacy marks fall back to the 'wrong word' red. */
+.ghost-word.marked,
+.answer-word.marked,
+.word-mark-dot.marked {
+  --write-mark: hsl(2, 78%, 60%);
+}
+
+.ghost-word.marked-forgotten,
+.answer-word.marked-forgotten,
+.word-mark-dot.marked-forgotten {
+  --write-mark: hsl(26, 90%, 58%);
+}
+
+.ghost-word.marked-haraka,
+.answer-word.marked-haraka,
+.word-mark-dot.marked-haraka {
+  --write-mark: hsl(210, 85%, 62%);
+}
+
+.ghost-word.marked-pronunciation,
+.answer-word.marked-pronunciation,
+.word-mark-dot.marked-pronunciation {
+  --write-mark: hsl(180, 65%, 48%);
+}
+
+.ghost-word.marked-meaning,
+.answer-word.marked-meaning,
+.word-mark-dot.marked-meaning {
+  --write-mark: hsl(280, 70%, 66%);
+}
+
+/* Words flagged for review render in their mistake color everywhere they appear
+   (higher specificity than the active/faint rules so the flag always wins). */
 .canvas-ghost-word .ghost-word.marked,
 .canvas-ghost-page .ghost-word.marked {
-  color: hsl(2, 78%, 60%) !important;
+  color: var(--write-mark) !important;
   opacity: calc(0.6 * var(--ghost-vis, 1));
 }
 
 .canvas-ghost-word.ghost-blocks .ghost-word.marked,
 .canvas-ghost-page.ghost-blocks .ghost-word.marked {
-  background-color: hsl(2, 78%, 60%) !important;
+  background-color: var(--write-mark) !important;
 }
 
 .answer-word.marked {
-  color: hsl(2, 78%, 60%);
+  color: var(--write-mark);
 }
 
 /* Reveal wipe: raise the trace above the ink, brighten it and let the ink show
@@ -1144,9 +1714,9 @@ button {
 }
 
 .canvas-ghost-word.revealing .ghost-word.marked {
-  -webkit-text-stroke-color: hsl(2, 90%, 62%);
-  text-stroke-color: hsl(2, 90%, 62%);
-  filter: drop-shadow(0 0 3px hsla(2, 90%, 50%, 0.9));
+  -webkit-text-stroke-color: var(--write-mark);
+  text-stroke-color: var(--write-mark);
+  filter: drop-shadow(0 0 3px var(--write-mark));
 }
 
 /* Transparent dot overlay: sits above the ink so its golden review dots are
@@ -1190,9 +1760,9 @@ button {
 }
 
 .word-mark-dot.marked {
-  background-color: hsl(2, 78%, 58%);
-  border-color: hsl(2, 60%, 30%);
-  box-shadow: 0 0 6px hsla(2, 90%, 55%, 0.85);
+  background-color: var(--write-mark);
+  border-color: hsl(0, 0%, 22%);
+  box-shadow: 0 0 6px var(--write-mark);
   opacity: 1;
 }
 
@@ -1231,8 +1801,8 @@ button {
   position: relative;
   flex: 1;
   min-width: 0;
-  height: 60vh;
-  max-height: 640px;
+  height: 70vh;
+  max-height: 900px;
   overflow-y: auto;
   overflow-x: hidden;
   background-color: var(--ink-slate);
@@ -1264,17 +1834,17 @@ button {
   flex-direction: row-reverse; /* words[0] on the right → correct RTL reading order */
   justify-content: space-between;
   align-items: center;
-  min-height: 68px;
+  min-height: 140px;
   border-bottom: 1px dashed hsla(43, 70%, 70%, 0.15);
   /* top padding gives the review dots headroom; bottom padding reserves a lane
      for the per-line reveal slider so neither overlaps the words */
-  padding: 14px 2px 16px;
+  padding: 20px 2px 24px;
   gap: 2px;
 }
 
 .canvas-ghost-page .ghost-word {
   font-family: var(--font-arabic);
-  font-size: clamp(1.2rem, 5vw, 1.9rem);
+  font-size: clamp(1.8rem, 5.5vw, 4.5rem);
   color: hsl(43, 55%, 96%);
   opacity: calc(0.16 * var(--ghost-vis, 1));
   line-height: 1;
@@ -1284,11 +1854,11 @@ button {
   opacity: calc(0.35 * var(--ghost-vis, 1));
   color: hsl(43, 80%, 70%);
   font-family: var(--font-sans);
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   border: 1px solid hsl(43, 80%, 70%);
   border-radius: 50%;
-  width: 16px;
-  height: 16px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1298,7 +1868,7 @@ button {
 .canvas-ghost-page .ghost-page-surah,
 .canvas-ghost-page .ghost-page-bismillah {
   font-family: var(--font-arabic);
-  font-size: clamp(1rem, 4vw, 1.6rem);
+  font-size: clamp(1.5rem, 4.2vw, 3.4rem);
   color: hsl(43, 80%, 70%);
   opacity: calc(0.25 * var(--ghost-vis, 1));
   flex-grow: 1;
@@ -1434,10 +2004,26 @@ button {
   color: var(--text-muted);
 }
 
-.pagewrite-slider {
-  writing-mode: vertical-lr; /* vertical range; value 0 (page top) sits at the top */
-  width: 24px;
+/* The rotated slider is taken out of flow, so this track holds the vertical lane
+   and gives it a height for the JS to measure. */
+.pagewrite-slider-track {
+  position: relative;
   flex: 1;
+  min-height: 0;
+  width: 24px;
+}
+
+/* A plain horizontal range rotated 90° (min→top, max→bottom). This works on every
+   iPad/Safari, unlike `writing-mode: vertical-lr` which older iOS ignored and drew
+   horizontal. Its width (= the vertical length) is set in JS to the track height. */
+.pagewrite-slider {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  height: 24px;
+  margin: 0;
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
   accent-color: var(--accent-emerald);
   cursor: pointer;
 }
@@ -2395,9 +2981,10 @@ button {
     font-size: 1.15rem;
   }
 
-  /* Selector in header */
-  .quran-selector {
-    gap: 6px;
+  /* Selector in header (stays attached; segments just shrink) */
+  .seg-btn {
+    padding: 7px 10px;
+    font-size: 0.8rem;
   }
 
   .selector-input, .selector-btn {
@@ -2659,5 +3246,648 @@ button {
   .pagemap-history-panel {
     width: 260px;
     right: -40px;
+  }
+}
+
+/* --- Mistakes module: dashboard + drill --- */
+.mistake-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.mistake-stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 10px;
+  border: 1.5px solid var(--stat-color);
+  border-radius: var(--border-radius-md, 10px);
+  background: var(--stat-tint);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mistake-stat-card:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.mistake-stat-card.active {
+  box-shadow: 0 0 0 2px var(--stat-color);
+}
+
+.mistake-stat-card:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mistake-stat-count {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--stat-color);
+  line-height: 1;
+}
+
+.mistake-stat-label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.mistake-dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .mistake-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.weak-page-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--border-radius-sm, 6px);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.88rem;
+  text-align: left;
+}
+
+.weak-page-row:hover {
+  border-color: var(--border-color);
+}
+
+.weak-page-row.active {
+  border-color: var(--accent-gold);
+  background: rgba(212, 175, 55, 0.08);
+}
+
+.weak-page-dots {
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.weak-page-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.weak-page-count {
+  font-weight: 700;
+  color: var(--accent-gold);
+  min-width: 24px;
+  text-align: right;
+}
+
+.mistake-word-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.mistake-word-row:last-child {
+  border-bottom: none;
+}
+
+.mistake-word-text {
+  min-width: 90px;
+}
+
+.mistake-type-badge {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.mistake-word-loc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.mistake-word-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.mistake-word-actions .btn-outline {
+  padding: 3px 10px;
+  font-size: 0.75rem;
+}
+
+.drill-arabic-option {
+  font-size: 1.5rem !important;
+  line-height: 1.6;
+}
+
+.cloze-blank {
+  display: inline-block;
+  min-width: 70px;
+  border-bottom: 2px dashed var(--accent-gold);
+  color: var(--accent-gold);
+  text-align: center;
+}
+
+/* Typed cloze answer (mistake drill) */
+.drill-type-area {
+  margin-top: 16px;
+}
+
+.drill-cloze-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  padding: 10px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 1.4rem;
+}
+
+.drill-cloze-input:focus {
+  outline: none;
+  border-color: var(--accent-gold);
+}
+
+/* On-screen Arabic keyboard */
+.arabic-kb {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 14px;
+  max-width: 520px;
+  margin-left: auto;
+  margin-right: auto;
+  user-select: none;
+}
+
+.arabic-kb-row {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+}
+
+.arabic-kb-key {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 44px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-arabic);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.arabic-kb-key:hover {
+  background: var(--accent-gold-glow);
+  border-color: var(--accent-gold);
+}
+
+.arabic-kb-key:active {
+  background: var(--accent-gold);
+  color: var(--bg-primary);
+}
+
+.arabic-kb-key.kb-haraka {
+  color: var(--accent-gold);
+  font-size: 1.05rem;
+}
+
+.arabic-kb-key.kb-ctrl {
+  max-width: 90px;
+  flex: 2 1 0;
+  font-size: 0.95rem;
+}
+
+.arabic-kb-key.kb-space {
+  max-width: 220px;
+  flex: 5 1 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 520px) {
+  .arabic-kb-key {
+    height: 38px;
+    font-size: 1.05rem;
+    border-radius: 4px;
+  }
+}
+
+/* ============================================
+   Memorization Tracker Module
+   ============================================ */
+
+.memo-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.memo-tabs .memo-tab-active {
+  border-color: var(--accent-gold);
+  background: var(--accent-gold-glow);
+  color: var(--accent-gold);
+  font-weight: 600;
+}
+
+.memo-tab-badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-gold);
+  color: hsl(43, 55%, 96%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.memo-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.memo-stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 10px;
+  border: 1.5px solid var(--accent-gold);
+  border-radius: var(--border-radius-md);
+  background: var(--accent-gold-glow);
+}
+
+.memo-stat-count {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--accent-gold);
+  line-height: 1;
+}
+
+.memo-stat-label {
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.memo-surah-card {
+  padding: 16px 20px;
+  margin-bottom: 14px;
+}
+
+.memo-surah-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 0 0 10px;
+}
+
+.memo-surah-names {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.memo-surah-arabic {
+  font-size: 1.35rem;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.memo-surah-en {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.memo-surah-counts {
+  margin-left: auto;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.memo-surah-pct {
+  font-weight: 700;
+  color: var(--accent-gold);
+  min-width: 44px;
+  text-align: right;
+}
+
+.memo-expand-chevron {
+  color: var(--text-muted);
+}
+
+/* Dual-segment progress bar: solid = memorized, hatched gold = in progress */
+.memo-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  background-color: var(--bg-tertiary);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.memo-bar-done {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-emerald), hsl(162, 42%, 34%));
+  transition: width var(--transition-medium);
+}
+
+.memo-bar-working {
+  height: 100%;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent-gold),
+    var(--accent-gold) 4px,
+    hsla(38, 62%, 40%, 0.35) 4px,
+    hsla(38, 62%, 40%, 0.35) 8px
+  );
+  transition: width var(--transition-medium);
+}
+
+.memo-range-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border-radius: var(--border-radius-sm);
+  font-size: 0.88rem;
+}
+
+.memo-range-form label {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.memo-range-input {
+  width: 68px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.memo-range-input:focus {
+  border-color: var(--accent-gold);
+}
+
+.memo-range-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.memo-range-error {
+  color: var(--color-error);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.memo-verse-list {
+  margin-top: 4px;
+}
+
+.memo-verse-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.memo-verse-row:last-child {
+  border-bottom: none;
+}
+
+.memo-verse-jump {
+  cursor: pointer;
+  border-radius: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  transition: background 0.15s ease;
+}
+
+.memo-verse-jump:hover {
+  background: var(--bg-tertiary);
+}
+
+.memo-jump-hint {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-gold);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  white-space: nowrap;
+}
+
+.memo-verse-jump:hover .memo-jump-hint {
+  opacity: 1;
+}
+
+.memo-verse-num {
+  min-width: 32px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 999px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+}
+
+.memo-verse-ref {
+  min-width: 120px;
+  white-space: nowrap;
+}
+
+.memo-verse-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex-grow: 1;
+}
+
+.memo-verse-arabic {
+  font-family: var(--font-arabic);
+  font-size: 1.25rem;
+  line-height: 1.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-verse-translation {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-rep-badge {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-info);
+  background: hsla(205, 60%, 36%, 0.10);
+  border: 1px solid hsla(205, 60%, 36%, 0.30);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+
+.memo-status-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.memo-status-btn {
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-color);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.memo-status-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.memo-status-btn.is-memorizing {
+  border-color: var(--accent-gold);
+  color: var(--accent-gold);
+  background: var(--accent-gold-glow);
+}
+
+.memo-status-btn.is-memorized {
+  border-color: var(--color-success);
+  color: hsl(43, 55%, 96%);
+  background: var(--color-success);
+}
+
+.memo-status-date {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.memo-mark-btn {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+}
+
+/* Add-surah picker modal */
+.memo-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: hsla(30, 40%, 15%, 0.35);
+  z-index: 99;
+}
+
+.memo-picker-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.memo-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--border-radius-sm);
+  text-align: left;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.memo-picker-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.memo-picker-row.tracked {
+  opacity: 0.6;
+}
+
+.memo-picker-num {
+  min-width: 30px;
+  font-weight: 700;
+  color: var(--accent-gold);
+}
+
+.memo-picker-arabic {
+  margin-left: auto;
+  font-size: 1.15rem;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.memo-picker-tracked {
+  font-size: 0.7rem;
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+@media (max-width: 700px) {
+  .memo-surah-counts {
+    display: none;
+  }
+  .memo-verse-arabic {
+    font-size: 1.05rem;
   }
 }

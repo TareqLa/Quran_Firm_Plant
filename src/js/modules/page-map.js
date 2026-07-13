@@ -9,6 +9,17 @@ const STORAGE_KEY_LAST_PAGE = 'pagemap-last-page';
 const STORAGE_KEY_HISTORY = 'pagemap-page-history';
 const MAX_HISTORY_ITEMS = 30;
 
+// Mistake types a word can be marked with. Warm hues = recitation recall
+// errors, cool hues = knowledge errors. Border style doubles as a
+// colorblind-safe encoding.
+export const MISTAKE_TYPES = [
+  { type: 'word', label: 'Wrong Word', cssVar: '--mistake-word' },
+  { type: 'forgotten', label: 'Forgotten Word', cssVar: '--mistake-forgotten' },
+  { type: 'haraka', label: 'Wrong Haraka', cssVar: '--mistake-haraka' },
+  { type: 'pronunciation', label: 'Wrong Pronunciation', cssVar: '--mistake-pronunciation' },
+  { type: 'meaning', label: 'Wrong / Forgotten Meaning', cssVar: '--mistake-meaning' },
+];
+
 export class PageMapModule {
   constructor(contentContainerId) {
     this.container = document.getElementById(contentContainerId);
@@ -26,15 +37,30 @@ export class PageMapModule {
     // Page history state
     this.showHistory = false;
 
-    // Marked forgotten words
-    this.markedWords = new Set();
+    // Marked mistake words: wordKey -> mistake type ('forgotten' | 'word' | 'haraka' | 'meaning')
+    this.markedWords = new Map();
 
     // Silhouette study state (merged from Blank Page module)
     this.studyMode = localStorage.getItem('pagemap-study-mode') || 'free'; // 'free' | 'sequential' | 'first-word'
     this.sliderMode = localStorage.getItem('pagemap-slider-mode') === '1'; // per-line reading reveal sliders
+    this.showGlosses = localStorage.getItem('pagemap-show-glosses') === '1'; // show English gloss under revealed words
     this.revealedWords = new Set();   // persisted revealed word keys for the current page
     this.wordSequence = [];           // word keys in reading order (for sequential mode & progress)
     this.firstWordAnchors = new Set(); // first word key of each ayah on the page
+
+    // Repetition counter (right-side panel). Targets: a single verse, a verse
+    // group (range), or the whole page. The live count is what the user is
+    // tallying right now (+/- buttons); pressing Save commits it into a dated
+    // history entry, and the history sums those reps across days.
+    //   repHistory:  { targetKey: { mode, label, sessions: { 'YYYY-MM-DD': n } } }  (IndexedDB)
+    //   liveCounts:  { targetKey: n }  uncommitted tallies (localStorage)
+    // Target keys: `page-591`, `verse-87:5`, `group-87:2~87:5`.
+    this.repHistory = {};
+    this.liveCounts = {};
+    this.counterMode = localStorage.getItem('repetition-mode') || 'page'; // 'verse' | 'group' | 'page'
+    this.counterVerse = null;      // selected verse key (verse mode)
+    this.counterGroupFrom = null;  // selected start verse key (group mode)
+    this.counterGroupTo = null;    // selected end verse key (group mode)
   }
 
   // --- Page History Helpers ---
@@ -98,11 +124,17 @@ export class PageMapModule {
     `;
 
     try {
+      // Saved as [wordKey, type] pairs; older saves were plain wordKey strings
+      // from when "forgotten" was the only mark type.
       const savedMarked = await db.getProgress(`pagemap-marked-${pageNumber}`);
-      this.markedWords = new Set(savedMarked || []);
+      this.markedWords = new Map((savedMarked || []).map(entry =>
+        typeof entry === 'string' ? [entry, 'forgotten'] : entry
+      ));
 
       const savedRevealed = await db.getProgress(`pagemap-revealed-${pageNumber}`);
       this.revealedWords = new Set(savedRevealed || []);
+
+      await this.loadRepetitionData();
 
       const [pageData, wordTranslations] = await Promise.all([
         quranLoader.loadPage(pageNumber, this.currentEdition),
@@ -137,14 +169,37 @@ export class PageMapModule {
     const hasHistory = history.length > 0;
     
     this.container.innerHTML = `
-      <!-- Row 1: Study mode (left) + page actions (right) -->
+      <!-- Single toolbar: reveal mode (left) + view toggles & page actions (right) -->
       <div class="blank-page-controls" style="margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-        <div class="toolbar-group">
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'free' ? 'active' : ''}" data-study-mode="free">Free Reveal</button>
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'sequential' ? 'active' : ''}" data-study-mode="sequential">Next Word Guide</button>
-          <button class="btn-outline study-mode-btn ${this.studyMode === 'first-word' ? 'active' : ''}" data-study-mode="first-word">First Word Anchors</button>
-        </div>
         <div class="toolbar-group" style="gap: 8px;">
+          <div class="seg-control" role="group" aria-label="Reveal mode">
+            <button class="seg-btn study-mode-btn ${this.studyMode === 'free' ? 'active' : ''}" data-study-mode="free">Free reveal</button>
+            <button class="seg-btn study-mode-btn ${this.studyMode === 'sequential' ? 'active' : ''}" data-study-mode="sequential">Next word guide</button>
+            <button class="seg-btn study-mode-btn ${this.studyMode === 'first-word' ? 'active' : ''}" data-study-mode="first-word">First word anchors</button>
+          </div>
+          <button id="sil-reveal-next-btn" class="btn-quiet" ${this.studyMode !== 'sequential' ? 'style="display:none;"' : ''}>Reveal next word →</button>
+        </div>
+
+        <div class="toolbar-group" style="gap: 8px; align-items: center;">
+          <div class="seg-control" role="group" aria-label="View options">
+            <button id="sil-slider-toggle-btn" class="seg-btn toggle-btn ${this.sliderMode ? 'active' : ''}" title="Show a per-line slider that sweeps words visible as you read" aria-pressed="${this.sliderMode}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="21" y1="6" x2="14" y2="6"/><line x1="10" y1="6" x2="3" y2="6"/>
+                <line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="18" x2="16" y2="18"/><line x1="12" y1="18" x2="3" y2="18"/>
+                <line x1="14" y1="4" x2="14" y2="8"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="16" x2="16" y2="20"/>
+              </svg>
+              Sliders
+            </button>
+            <button id="sil-gloss-toggle-btn" class="seg-btn toggle-btn ${this.showGlosses ? 'active' : ''}" title="Briefly pop up the English translation whenever a word is revealed" aria-pressed="${this.showGlosses}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/>
+                <path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>
+              </svg>
+              Translations
+            </button>
+          </div>
+
           <!-- Write This Page Button -->
           <button id="pagemap-write-btn" class="btn-gold" style="display: flex; align-items: center; gap: 5px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -153,18 +208,17 @@ export class PageMapModule {
             </svg>
             Write Page ${this.currentPage}
           </button>
-          
-          <!-- Page History Toggle -->
+
+          <!-- Page History Toggle (icon-only; label lives in the tooltip) -->
           <div class="pagemap-history-wrapper">
-            <button id="pagemap-history-btn" class="btn-outline ${this.showHistory ? 'active' : ''}" title="Page History" style="display: flex; align-items: center; gap: 5px; position: relative;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <button id="pagemap-history-btn" class="btn-outline ${this.showHistory ? 'active' : ''}" title="Page history" aria-label="Page history" style="display: flex; align-items: center; position: relative; padding: 10px 12px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <polyline points="12 6 12 12 16 14"></polyline>
               </svg>
-              History
               ${hasHistory ? `<span class="history-badge">${history.length}</span>` : ''}
             </button>
-            
+
             ${this.showHistory ? `
               <div class="pagemap-history-panel">
                 <div class="pagemap-history-header">
@@ -193,28 +247,22 @@ export class PageMapModule {
               </div>
             ` : ''}
           </div>
-          
-          <label style="font-size: 0.85rem; color: var(--text-secondary); margin-right: 6px;">Mushaf:</label>
-          <select id="mushaf-edition-select" class="selector-input" style="padding: 6px 12px; font-size: 0.85rem; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; cursor: pointer; margin-bottom: 0;">
+
+          <select id="mushaf-edition-select" class="selector-input" title="Mushaf edition" style="padding: 6px 12px; font-size: 0.85rem; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 4px; cursor: pointer; margin-bottom: 0;">
             <option value="v2" ${this.currentEdition === 'v2' ? 'selected' : ''}>Madinah V2 (Standard)</option>
             <option value="v1" ${this.currentEdition === 'v1' ? 'selected' : ''}>Madinah V1 (Classic 1405 AH)</option>
           </select>
         </div>
       </div>
 
-      <!-- Row 2: Reveal controls (centered) -->
-      <div class="blank-page-controls" style="justify-content: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px;">
-        <div class="toolbar-group">
-          <button id="sil-reveal-next-btn" class="btn-gold" ${this.studyMode !== 'sequential' ? 'style="display:none;"' : ''}>Reveal Next Word →</button>
-          <button id="sil-slider-toggle-btn" class="btn-outline ${this.sliderMode ? 'active' : ''}">Reading Sliders</button>
-          <button id="sil-hide-all-btn" class="btn-outline">Hide All</button>
-          <button id="sil-show-all-btn" class="btn-outline">Show All</button>
+      <!-- Main Display: silhouette (left/center) + repetition counter panel (right) -->
+      <div class="pagemap-layout">
+        <div id="pagemap-content-area" style="display: flex; flex-direction: column; align-items: center; flex: 1 1 auto; min-width: 0;">
+          ${this.renderSilhouette()}
         </div>
-      </div>
-
-      <!-- Main Display -->
-      <div id="pagemap-content-area" style="display: flex; flex-direction: column; align-items: center; width: 100%;">
-        ${this.renderSilhouette()}
+        <aside id="pagemap-counter-panel" class="rep-panel">
+          ${this.renderCounterPanelInner()}
+        </aside>
       </div>
     `;
   }
@@ -236,6 +284,368 @@ export class PageMapModule {
         }
       });
     });
+  }
+
+  // --- Repetition Counter ---
+
+  _todayStr() {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  }
+
+  async loadRepetitionData() {
+    this.repHistory = (await db.getProgress('repetition-history')) || {};
+    try {
+      this.liveCounts = JSON.parse(localStorage.getItem('repetition-live') || '{}');
+    } catch {
+      this.liveCounts = {};
+    }
+    // Verse/group selections are page-specific, so clear them on each page load.
+    this.counterVerse = null;
+    this.counterGroupFrom = null;
+    this.counterGroupTo = null;
+  }
+
+  _saveHistory() {
+    db.saveProgress('repetition-history', this.repHistory);
+  }
+
+  _saveLive() {
+    Object.keys(this.liveCounts).forEach(k => {
+      if (!this.liveCounts[k]) delete this.liveCounts[k];
+    });
+    localStorage.setItem('repetition-live', JSON.stringify(this.liveCounts));
+  }
+
+  // What the counter is currently pointed at, based on mode + selections.
+  getCurrentTarget() {
+    if (this.counterMode === 'page') {
+      return { valid: true, mode: 'page', key: `page-${this.currentPage}`, label: `Page ${this.currentPage}` };
+    }
+    if (this.counterMode === 'verse') {
+      if (!this.counterVerse) return { valid: false, mode: 'verse', key: null, label: 'Pick a verse' };
+      return { valid: true, mode: 'verse', key: `verse-${this.counterVerse}`, label: `Verse ${this.counterVerse}` };
+    }
+    // group
+    if (!this.counterGroupFrom || !this.counterGroupTo) {
+      return { valid: false, mode: 'group', key: null, label: 'Pick start & end verses' };
+    }
+    const keys = this.getOrderedVerseKeys();
+    let a = keys.indexOf(this.counterGroupFrom);
+    let b = keys.indexOf(this.counterGroupTo);
+    if (a === -1 || b === -1) return { valid: false, mode: 'group', key: null, label: 'Pick start & end verses' };
+    if (a > b) [a, b] = [b, a];
+    const from = keys[a], to = keys[b];
+    return { valid: true, mode: 'group', key: `group-${from}~${to}`, label: `${from} – ${to}` };
+  }
+
+  getLive(key) {
+    return (key && this.liveCounts[key]) || 0;
+  }
+
+  // Saved-history stats for a target: grand total, today's committed count, and the raw sessions map.
+  getStats(key) {
+    const h = key && this.repHistory[key];
+    const sessions = h ? h.sessions : {};
+    const total = Object.values(sessions).reduce((s, n) => s + n, 0);
+    const today = sessions[this._todayStr()] || 0;
+    return { total, today, sessions };
+  }
+
+  // --- Counter mutations (state only; callers refresh the panel) ---
+
+  adjustCount(delta) {
+    const t = this.getCurrentTarget();
+    if (!t.valid) return;
+    this.liveCounts[t.key] = Math.max(0, this.getLive(t.key) + delta);
+    this._saveLive();
+  }
+
+  resetLive() {
+    const t = this.getCurrentTarget();
+    if (!t.valid) return;
+    this.liveCounts[t.key] = 0;
+    this._saveLive();
+  }
+
+  // Commit the live tally into today's dated history entry, then zero the live count.
+  saveSession() {
+    const t = this.getCurrentTarget();
+    if (!t.valid) return false;
+    const live = this.getLive(t.key);
+    if (live <= 0) return false;
+
+    if (!this.repHistory[t.key]) {
+      this.repHistory[t.key] = { mode: t.mode, label: t.label, sessions: {} };
+    }
+    const today = this._todayStr();
+    this.repHistory[t.key].label = t.label;
+    this.repHistory[t.key].sessions[today] = (this.repHistory[t.key].sessions[today] || 0) + live;
+    this.liveCounts[t.key] = 0;
+    this._saveHistory();
+    this._saveLive();
+    return true;
+  }
+
+  clearTargetHistory(key) {
+    delete this.repHistory[key];
+    this.liveCounts[key] = 0;
+    this._saveHistory();
+    this._saveLive();
+  }
+
+  // Saved targets that live on the current page, most recently practiced first.
+  // Each entry can be clicked in the panel to re-select that target and keep counting.
+  getPageTargets() {
+    const keys = this.getOrderedVerseKeys();
+    const onPage = (vk) => keys.includes(vk);
+    const entries = [];
+
+    Object.entries(this.repHistory).forEach(([key, h]) => {
+      let belongs = false;
+      if (key === `page-${this.currentPage}`) {
+        belongs = true;
+      } else if (key.startsWith('verse-')) {
+        belongs = onPage(key.slice(6));
+      } else if (key.startsWith('group-')) {
+        const [from, to] = key.slice(6).split('~');
+        belongs = onPage(from) && onPage(to);
+      }
+      if (!belongs) return;
+
+      const dates = Object.keys(h.sessions);
+      const total = Object.values(h.sessions).reduce((s, n) => s + n, 0);
+      if (total <= 0) return;
+      entries.push({ key, mode: h.mode, label: h.label, total, lastDate: dates.sort().pop() || '' });
+    });
+
+    entries.sort((a, b) => b.lastDate.localeCompare(a.lastDate));
+    return entries;
+  }
+
+  // Point the counter at a previously saved target (from the Recent list).
+  selectTarget(key) {
+    if (key.startsWith('page-')) {
+      this.counterMode = 'page';
+    } else if (key.startsWith('verse-')) {
+      this.counterMode = 'verse';
+      this.counterVerse = key.slice(6);
+    } else if (key.startsWith('group-')) {
+      const [from, to] = key.slice(6).split('~');
+      this.counterMode = 'group';
+      this.counterGroupFrom = from;
+      this.counterGroupTo = to;
+    }
+    localStorage.setItem('repetition-mode', this.counterMode);
+  }
+
+  // --- Counter panel rendering ---
+
+  _formatSessionDate(iso) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  renderCounterPanelInner() {
+    const t = this.getCurrentTarget();
+    const keys = this.getOrderedVerseKeys();
+    const live = this.getLive(t.key);
+    const stats = this.getStats(t.key);
+    // Show "live" numbers so the tallies feel responsive before saving.
+    const todayShown = stats.today + live;
+    const totalShown = stats.total + live;
+
+    const tab = (mode, txt) =>
+      `<button class="rep-mode-tab ${this.counterMode === mode ? 'active' : ''}" data-rep-mode="${mode}">${txt}</button>`;
+
+    const opts = (selected) =>
+      `<option value="">—</option>` +
+      keys.map(k => `<option value="${k}" ${k === selected ? 'selected' : ''}>${k}</option>`).join('');
+
+    let targetHtml = '';
+    if (this.counterMode === 'page') {
+      targetHtml = `<div class="rep-target-page">Page ${this.currentPage}</div>`;
+    } else if (this.counterMode === 'verse') {
+      targetHtml = `
+        <label class="rep-field">
+          <span>Verse</span>
+          <select id="rep-verse-select" class="rep-select">${opts(this.counterVerse)}</select>
+        </label>`;
+    } else {
+      targetHtml = `
+        <div class="rep-group-fields">
+          <label class="rep-field"><span>From</span><select id="rep-group-from" class="rep-select">${opts(this.counterGroupFrom)}</select></label>
+          <label class="rep-field"><span>To</span><select id="rep-group-to" class="rep-select">${opts(this.counterGroupTo)}</select></label>
+        </div>`;
+    }
+
+    const sessionRows = Object.keys(stats.sessions)
+      .sort((a, b) => b.localeCompare(a))
+      .map(date => `<div class="rep-history-row"><span>${this._formatSessionDate(date)}</span><span class="rep-history-count">${stats.sessions[date]}×</span></div>`)
+      .join('');
+
+    const recentRows = this.getPageTargets()
+      .map(e => `
+        <div class="rep-recent-row ${e.key === t.key ? 'active' : ''}" data-rep-target="${e.key}" title="Click to select and continue counting">
+          <span class="rep-recent-label">${e.label}</span>
+          <span class="rep-recent-total">${e.total}×</span>
+          <button class="rep-recent-delete" data-rep-delete="${e.key}" title="Delete saved history for ${e.label}">×</button>
+        </div>`)
+      .join('');
+
+    const disabled = t.valid ? '' : 'disabled';
+    const saveDisabled = (t.valid && live > 0) ? '' : 'disabled';
+
+    return `
+      <div class="rep-panel-head">
+        <span class="rep-panel-title">Repetition Counter</span>
+      </div>
+
+      <div class="rep-mode-tabs">
+        ${tab('verse', 'Verse')}
+        ${tab('group', 'Group')}
+        ${tab('page', 'Page')}
+      </div>
+
+      <div class="rep-target">${targetHtml}</div>
+
+      <div class="rep-count-wrap">
+        <button class="rep-adjust" id="rep-minus" ${disabled} aria-label="Decrease">−</button>
+        <div class="rep-count" id="rep-count">${t.valid ? live : '—'}</div>
+        <button class="rep-adjust" id="rep-plus" ${disabled} aria-label="Increase">+</button>
+      </div>
+      <div class="rep-count-hint">${t.valid ? 'reps this session' : t.label}</div>
+
+      <div class="rep-actions">
+        <button class="btn-gold" id="rep-save" ${saveDisabled}>Save</button>
+        <button class="btn-outline" id="rep-reset" ${saveDisabled}>Reset</button>
+      </div>
+
+      <div class="rep-stats">
+        <span>Today: <strong id="rep-today">${todayShown}</strong></span>
+        <span>Total: <strong id="rep-total">${totalShown}</strong></span>
+      </div>
+
+      <div class="rep-history-head">
+        <span>Recent on this page</span>
+      </div>
+      <div class="rep-recent" id="rep-recent">
+        ${recentRows || `<div class="rep-history-empty">No saved targets yet</div>`}
+      </div>
+
+      <div class="rep-history-head">
+        <span>History</span>
+        ${stats.total > 0 ? `<button class="rep-clear" id="rep-clear" title="Clear saved history for this target">Clear</button>` : ''}
+      </div>
+      <div class="rep-history" id="rep-history">
+        ${sessionRows || `<div class="rep-history-empty">No saved reps yet</div>`}
+      </div>
+    `;
+  }
+
+  refreshCounterPanel() {
+    const panel = document.getElementById('pagemap-counter-panel');
+    if (!panel) return;
+    panel.innerHTML = this.renderCounterPanelInner();
+    this.bindCounterPanel();
+  }
+
+  bindCounterPanel() {
+    const panel = document.getElementById('pagemap-counter-panel');
+    if (!panel) return;
+
+    panel.querySelectorAll('.rep-mode-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.counterMode = btn.dataset.repMode;
+        localStorage.setItem('repetition-mode', this.counterMode);
+        this.refreshCounterPanel();
+      });
+    });
+
+    panel.querySelector('#rep-verse-select')?.addEventListener('change', (e) => {
+      this.counterVerse = e.target.value || null;
+      this.refreshCounterPanel();
+    });
+    panel.querySelector('#rep-group-from')?.addEventListener('change', (e) => {
+      this.counterGroupFrom = e.target.value || null;
+      this.refreshCounterPanel();
+    });
+    panel.querySelector('#rep-group-to')?.addEventListener('change', (e) => {
+      this.counterGroupTo = e.target.value || null;
+      this.refreshCounterPanel();
+    });
+
+    panel.querySelector('#rep-minus')?.addEventListener('click', () => {
+      this.adjustCount(-1);
+      this.refreshCounterPanel();
+    });
+    panel.querySelector('#rep-plus')?.addEventListener('click', () => {
+      this.adjustCount(1);
+      this.refreshCounterPanel();
+    });
+    panel.querySelector('#rep-reset')?.addEventListener('click', () => {
+      this.resetLive();
+      this.refreshCounterPanel();
+    });
+    panel.querySelector('#rep-save')?.addEventListener('click', () => {
+      if (this.saveSession()) {
+        this._flashCurrentTarget();
+        this.refreshCounterPanel();
+      }
+    });
+    panel.querySelector('#rep-clear')?.addEventListener('click', () => {
+      const t = this.getCurrentTarget();
+      if (t.valid && confirm(`Clear all saved repetition history for ${t.label}?`)) {
+        this.clearTargetHistory(t.key);
+        this.refreshCounterPanel();
+      }
+    });
+
+    // Recent targets: click a row to re-select that target; × deletes its history.
+    panel.querySelectorAll('.rep-recent-row').forEach(row => {
+      row.addEventListener('click', () => {
+        this.selectTarget(row.dataset.repTarget);
+        this.refreshCounterPanel();
+        this._flashCurrentTarget();
+      });
+    });
+    panel.querySelectorAll('.rep-recent-delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.repDelete;
+        const label = this.repHistory[key]?.label || key;
+        if (confirm(`Delete all saved repetition history for ${label}?`)) {
+          this.clearTargetHistory(key);
+          this.refreshCounterPanel();
+        }
+      });
+    });
+  }
+
+  // The verse keys covered by the current target (for highlight/flash on the map).
+  _targetVerseKeys() {
+    if (this.counterMode === 'verse' && this.counterVerse) return [this.counterVerse];
+    if (this.counterMode === 'group' && this.counterGroupFrom && this.counterGroupTo) {
+      const keys = this.getOrderedVerseKeys();
+      let a = keys.indexOf(this.counterGroupFrom);
+      let b = keys.indexOf(this.counterGroupTo);
+      if (a === -1 || b === -1) return [];
+      if (a > b) [a, b] = [b, a];
+      return keys.slice(a, b + 1);
+    }
+    return []; // page mode: no specific highlight
+  }
+
+  _flashCurrentTarget() {
+    const verseKeys = this._targetVerseKeys();
+    const words = [];
+    verseKeys.forEach(vk => {
+      this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${vk}"]`).forEach(w => words.push(w));
+    });
+    words.forEach(w => w.classList.add('verse-locate-flash'));
+    setTimeout(() => words.forEach(w => w.classList.remove('verse-locate-flash')), 1600);
   }
 
   // A word is visible if explicitly revealed, or shown as an anchor in first-word mode
@@ -281,6 +691,16 @@ export class PageMapModule {
     document.getElementById('mushaf-word-tooltip')?.remove();
   }
 
+  // Briefly pop up the translation tooltip over a word that was just revealed
+  // (Translations toggle). Reuses the hover tooltip; only one flash at a time,
+  // so a slider sweep shows each word's gloss as the reveal edge passes it.
+  flashWordGloss(box) {
+    if (!this.showGlosses || !box) return;
+    this.showWordTooltip(box);
+    clearTimeout(this._glossFlashTimer);
+    this._glossFlashTimer = setTimeout(() => this.hideWordTooltip(), 1600);
+  }
+
   getNextSequentialKey() {
     return this.wordSequence.find(key => !this.revealedWords.has(key)) || null;
   }
@@ -291,10 +711,12 @@ export class PageMapModule {
 
   // Update reveal state for a list of word-box elements, persist, and refresh the progress UI
   setRevealedForElements(elements, reveal) {
+    let lastNewlyRevealed = null;
     elements.forEach(el => {
       const key = el.dataset.key;
       if (!key) return; // skip ayah-end markers
       if (reveal) {
+        if (!this.revealedWords.has(key)) lastNewlyRevealed = el;
         this.revealedWords.add(key);
       } else {
         this.revealedWords.delete(key);
@@ -305,6 +727,7 @@ export class PageMapModule {
     this.saveRevealed();
     this.updateSilhouetteProgress();
     this.syncLineSliders();
+    this.flashWordGloss(lastNewlyRevealed);
   }
 
   clearPartialReveal(el) {
@@ -359,12 +782,14 @@ export class PageMapModule {
   // the right. The word straddling the boundary is partially revealed so the
   // reveal edge tracks the thumb exactly.
   applySliderFraction(geo, f) {
+    let lastNewlyRevealed = null;
     geo.rects.forEach(({ box, r }) => {
       const key = box.dataset.key;
       const wordRightFrac = (geo.right - r.right) / geo.span;
       const wordLeftFrac = (geo.right - r.left) / geo.span;
 
       if (f >= wordLeftFrac - 1e-4) {
+        if (!this.revealedWords.has(key)) lastNewlyRevealed = box;
         this.revealedWords.add(key);
         this.clearPartialReveal(box);
         box.classList.add('revealed');
@@ -380,6 +805,7 @@ export class PageMapModule {
         box.classList.toggle('revealed', this.isWordShown(key));
       }
     });
+    this.flashWordGloss(lastNewlyRevealed);
   }
 
   // Re-measure every visible slider and snap its thumb to the current reveal
@@ -473,10 +899,10 @@ export class PageMapModule {
         } else if (word.type === 'word') {
           // Render blank blocks using proportional flex-grow to prevent container overflow
           // Render the exact QCF4 character (word.char) to get perfect Madinah Mushaf calligraphy
-          const isMarked = this.markedWords.has(wordKey);
+          const markType = this.markedWords.get(wordKey);
           const isShown = this.isWordShown(wordKey);
           wordsHtml += `
-            <span class="mushaf-word-box ${isMarked ? 'marked-forgotten' : ''} ${isShown ? 'revealed' : ''}"
+            <span class="mushaf-word-box ${markType ? `marked-${markType}` : ''} ${isShown ? 'revealed' : ''}"
                   data-key="${wordKey}"
                   data-verse-key="${word.verse_key || ''}"
                   data-position="${word.position || ''}"
@@ -517,17 +943,19 @@ export class PageMapModule {
           background-color: rgba(212, 175, 55, 0.12) !important;
         }
       </style>
-      <div class="progress-bar-container" style="width: 100%; max-width: 700px; margin: 0 auto 4px;">
-        <div id="sil-progress-bar" class="progress-bar" style="width: ${pct}%"></div>
-      </div>
-      <div id="sil-progress-text" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">
-        Revealed: ${revealed} / ${total} words (${pct}%)
-      </div>
-
-      <div style="display: flex; align-items: center; justify-content: center; gap: 14px; margin-bottom: 14px;">
-        <button id="sil-prev-page" class="btn-outline" ${this.currentPage <= 1 ? 'disabled' : ''}>‹ Page ${this.currentPage - 1}</button>
-        <h4 style="color: var(--text-secondary); margin: 0;">Page ${this.currentPage}</h4>
-        <button id="sil-next-page" class="btn-outline" ${this.currentPage >= 604 ? 'disabled' : ''}>Page ${this.currentPage + 1} ›</button>
+      <div style="width: 100%; max-width: 700px; margin: 0 auto 14px;">
+        <div class="progress-bar-container" style="margin-bottom: 4px;">
+          <div id="sil-progress-bar" class="progress-bar" style="width: ${pct}%"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <span id="sil-progress-text" style="font-size: 0.85rem; color: var(--text-secondary);">
+            Revealed: ${revealed} / ${total} words (${pct}%)
+          </span>
+          <span style="display: flex; gap: 6px;">
+            <button id="sil-show-all-btn" class="btn-quiet">Show all</button>
+            <button id="sil-hide-all-btn" class="btn-quiet">Hide all</button>
+          </span>
+        </div>
       </div>
       <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 12px;">Tap blocks to reveal words. Long-press a word to mark it, or an ayah circle for ayah options & audio.</p>
       <div class="mushaf-page-container">
@@ -738,6 +1166,16 @@ export class PageMapModule {
         this.syncLineSliders();
       });
 
+      // Translations toggle: briefly pops up the English gloss when a word is
+      // revealed (tap, menu action, or reading slider). State only — reveal
+      // state and sliders are untouched.
+      document.getElementById('sil-gloss-toggle-btn')?.addEventListener('click', (e) => {
+        this.showGlosses = !this.showGlosses;
+        localStorage.setItem('pagemap-show-glosses', this.showGlosses ? '1' : '0');
+        e.currentTarget.classList.toggle('active', this.showGlosses);
+        e.currentTarget.setAttribute('aria-pressed', this.showGlosses);
+      });
+
       // Reading Sliders toggle: adds/removes the per-line reveal sliders
       document.getElementById('sil-slider-toggle-btn')?.addEventListener('click', () => {
         this.sliderMode = !this.sliderMode;
@@ -787,20 +1225,12 @@ export class PageMapModule {
         }
       }
 
-      // Previous / next page navigation (continuous study across a surah)
-      const goToPage = (page) => {
-        if (page < 1 || page > 604) return;
-        if (window.app && window.app.surahSelector) {
-          window.app.surahSelector.setCurrentPage(page);
-        }
-        this.loadPage(page);
-      };
-      document.getElementById('sil-prev-page')?.addEventListener('click', () => goToPage(this.currentPage - 1));
-      document.getElementById('sil-next-page')?.addEventListener('click', () => goToPage(this.currentPage + 1));
-
       // Position the sequential-mode hint on initial render
       this.updateSilhouetteProgress();
     }
+
+    // Repetition counter panel (present whenever the silhouette is rendered)
+    this.bindCounterPanel();
 
     // Mushaf edition select event listener
     const editionSelect = document.getElementById('mushaf-edition-select');
@@ -853,14 +1283,19 @@ export class PageMapModule {
 
     if (isWord) {
       const wordKey = target.dataset.key;
-      const isMarked = this.markedWords.has(wordKey);
+      const currentType = this.markedWords.get(wordKey);
       const translation = this.getWordTranslation(target);
       title = `Word Options`;
+      const markButtons = MISTAKE_TYPES.map(({ type, label, cssVar }) => `
+        <button class="context-menu-item mark-option ${currentType === type ? 'active' : ''}"
+                style="color: var(${cssVar});" data-action="set-mark" data-value="${wordKey}" data-type="${type}">
+          <span class="mark-swatch mark-swatch-${type}"></span>${label}${currentType === type ? ' ✓' : ''}
+        </button>
+      `).join('');
       optionsHtml = `
         ${translation ? `<div class="context-menu-translation">${translation}</div>` : ''}
-        <button class="context-menu-item" style="color: var(--color-error); font-weight: bold;" data-action="toggle-mark" data-value="${wordKey}">
-          ${isMarked ? 'Unmark Word' : 'Mark as Forgotten (Red)'}
-        </button>
+        ${markButtons}
+        ${currentType ? `<button class="context-menu-item" data-action="unmark" data-value="${wordKey}">Unmark Word</button>` : ''}
       `;
     } else if (isAyah) {
       const verseKey = target.dataset.verseKey;
@@ -868,7 +1303,7 @@ export class PageMapModule {
       
       const [surahNum, ayahNum] = verseKey.split(':');
       title = `Ayah ${ayahNum}`;
-      
+
       optionsHtml = `
         <button class="context-menu-item" style="color: var(--accent-gold); font-weight: bold;" data-action="play-audio" data-value="${verseKey}">▶ Play Ayah Audio</button>
         <button class="context-menu-item" data-action="reveal-verse" data-value="${verseKey}">Unhide Ayah ${ayahNum}</button>
@@ -947,7 +1382,7 @@ export class PageMapModule {
       item.addEventListener('click', (e) => {
         const action = item.dataset.action;
         const val = item.dataset.value;
-        this.executeContextMenuAction(action, val);
+        this.executeContextMenuAction(action, val, item.dataset.type);
         this.closeContextMenu();
       });
     });
@@ -1004,7 +1439,7 @@ export class PageMapModule {
     }
   }
 
-  executeContextMenuAction(action, value) {
+  executeContextMenuAction(action, value, type) {
     if (action === 'play-audio') {
       this.playAyahAudio(value);
     } else if (action === 'reveal-verse' || action === 'hide-verse') {
@@ -1021,18 +1456,23 @@ export class PageMapModule {
       this.setRevealedForElements(this._wordsForLineRange(1, parseInt(value) - 1), action === 'reveal-lines-before');
     } else if (action === 'reveal-lines-after' || action === 'hide-lines-after') {
       this.setRevealedForElements(this._wordsForLineRange(parseInt(value) + 1, 15), action === 'reveal-lines-after');
-    } else if (action === 'toggle-mark') {
-      if (this.markedWords.has(value)) {
+    } else if (action === 'set-mark' || action === 'unmark') {
+      const wordEl = this.container.querySelector(`.mushaf-word-box[data-key="${value}"]`);
+      const currentType = this.markedWords.get(value);
+      if (currentType && wordEl) {
+        wordEl.classList.remove(`marked-${currentType}`);
+      }
+
+      // Re-selecting the active type acts as a toggle-off, same as Unmark
+      if (action === 'unmark' || currentType === type) {
         this.markedWords.delete(value);
       } else {
-        this.markedWords.add(value);
+        this.markedWords.set(value, type);
+        if (wordEl) {
+          wordEl.classList.add(`marked-${type}`);
+        }
       }
-      db.saveProgress(`pagemap-marked-${this.currentPage}`, Array.from(this.markedWords));
-      
-      const wordEl = this.container.querySelector(`.mushaf-word-box[data-key="${value}"]`);
-      if (wordEl) {
-        wordEl.classList.toggle('marked-forgotten');
-      }
+      db.saveProgress(`pagemap-marked-${this.currentPage}`, Array.from(this.markedWords.entries()));
     }
   }
 }

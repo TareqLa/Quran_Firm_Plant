@@ -3,7 +3,9 @@
 
 import { db } from './db.js';
 
-const QURAN_TEXT_URL = 'https://cdn.jsdelivr.net/npm/quran-json@3.1.2/dist/quran.json';
+// quran_en.json carries the same structure as quran.json plus an English
+// `translation` string on every verse.
+const QURAN_TEXT_URL = 'https://cdn.jsdelivr.net/npm/quran-json@3.1.2/dist/quran_en.json';
 const MUTASHABIHAT_URL = 'https://raw.githubusercontent.com/srmdn/quran-mutashabihat/master/quran-mutashabihat.json'; // fallback if fails
 
 // Returns the raw GitHub URL for a page layout JSON
@@ -145,6 +147,34 @@ export class QuranLoader {
       if (onProgress) onProgress(-1, 'Error: ' + e.message);
       return false;
     }
+  }
+
+  // Databases seeded before translations were included (from quran.json) have
+  // an empty `translation` on every ayah. Backfill them once from quran_en.json.
+  async ensureTranslations() {
+    if (await db.getProgress('translations-backfilled')) return true;
+
+    const test = await db.getAyah(1, 1);
+    if (!test) return false; // not seeded yet
+    if (test.translation) {
+      await db.saveProgress('translations-backfilled', true);
+      return true;
+    }
+
+    const response = await fetch(QURAN_TEXT_URL);
+    if (!response.ok) throw new Error('Failed to fetch translations');
+    const quranData = await response.json();
+
+    for (const surah of quranData) {
+      const updated = surah.verses.map(verse => ({
+        id: `${surah.id}:${verse.id}`,
+        translation: verse.translation || ''
+      }));
+      await db.updateAyahTranslations(updated);
+    }
+
+    await db.saveProgress('translations-backfilled', true);
+    return true;
   }
 
   // Load a single page's layout data (on-demand) and cache it

@@ -14,6 +14,8 @@ import { WritingPracticeModule } from './js/modules/writing-practice.js';
 import { VoiceFinderModule } from './js/modules/voice-finder.js';
 import { RecitationQuizModule } from './js/modules/quiz.js';
 import { MutashabihatModule } from './js/modules/mutashabihat.js';
+import { MistakesModule } from './js/modules/mistakes.js';
+import { MemorizationModule } from './js/modules/memorization.js';
 
 class AppController {
   constructor() {
@@ -211,6 +213,16 @@ class AppController {
       case 'mutashabihat':
         this.activeModuleInstance = new MutashabihatModule(contentAreaId);
         this.activeModuleInstance.loadSurah(this.surahSelector.getCurrentSurah());
+        break;
+
+      case 'mistakes':
+        this.activeModuleInstance = new MistakesModule(contentAreaId);
+        this.activeModuleInstance.render();
+        break;
+
+      case 'memorization':
+        this.activeModuleInstance = new MemorizationModule(contentAreaId);
+        this.activeModuleInstance.render();
         break;
 
       default:

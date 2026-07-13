@@ -33,7 +33,9 @@ export class Navigation {
       'writing': 'Writing & Typing Practice',
       'voice-finder': 'Voice Recitation Finder',
       'quiz': 'Recitation Quiz',
-      'mutashabihat': 'Mutashabihat (Similar Verses)'
+      'mutashabihat': 'Mutashabihat (Similar Verses)',
+      'mistakes': 'Mistake Dashboard & Drill',
+      'memorization': 'Memorization Tracker'
     };
     
     const headerTitle = document.getElementById('module-title');

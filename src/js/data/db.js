@@ -112,6 +112,27 @@ class QuranDB {
     });
   }
 
+  // Merge new translations into existing ayah records in a single transaction.
+  // `updates` is [{ id: "87:1", translation: "..." }, ...].
+  async updateAyahTranslations(updates) {
+    await this.initPromise;
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['text'], 'readwrite');
+      const store = transaction.objectStore('text');
+      updates.forEach(({ id, translation }) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+          if (req.result) {
+            req.result.translation = translation;
+            store.put(req.result);
+          }
+        };
+      });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = (e) => reject(e);
+    });
+  }
+
   async getSurahText(surahNumber) {
     await this.initPromise;
     return new Promise((resolve) => {
@@ -173,6 +194,29 @@ class QuranDB {
     });
   }
 
+  // Fetch all progress entries whose key starts with the given prefix
+  // (e.g. 'pagemap-marked-' returns the marked-word lists of every page).
+  async getProgressByPrefix(prefix) {
+    await this.initPromise;
+    return new Promise((resolve) => {
+      const transaction = this.db.transaction(['progress'], 'readonly');
+      const store = transaction.objectStore('progress');
+      const range = IDBKeyRange.bound(prefix, prefix + '￿');
+      const results = [];
+      const request = store.openCursor(range);
+      request.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          results.push({ key: cursor.value.key, value: cursor.value.value });
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+      request.onerror = () => resolve([]);
+    });
+  }
+
   async saveProgress(key, value) {
     await this.initPromise;
     return new Promise((resolve, reject) => {
@@ -181,6 +225,17 @@ class QuranDB {
       const request = store.put({ key, value });
       request.onsuccess = () => resolve();
       request.onerror = (e) => reject(e);
+    });
+  }
+
+  async deleteProgress(key) {
+    await this.initPromise;
+    return new Promise((resolve) => {
+      const transaction = this.db.transaction(['progress'], 'readwrite');
+      const store = transaction.objectStore('progress');
+      const request = store.delete(key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
     });
   }
 

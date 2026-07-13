@@ -3,6 +3,7 @@
 
 import { db } from '../data/db.js';
 import { quranLoader } from '../data/loader.js';
+import { MISTAKE_TYPES } from './page-map.js';
 
 export class WritingPracticeModule {
   constructor(contentContainerId) {
@@ -55,8 +56,9 @@ export class WritingPracticeModule {
     // Per-line "reveal" wipe (0-100): slides the correct text up over your ink so you
     // can check what you wrote. Resets to 0 each time you move to a new line.
     this.revealAmount = 0;
-    // Words the user flagged for review (wrote wrong / hard to remember). Persisted so
-    // the red mark survives reloads and shows on both the line sheet and the whole page.
+    // Words the user flagged for review: wordKey -> mistake type (same types as the
+    // page map). Persisted so marks survive reloads and show on both the line sheet
+    // and the whole page.
     this.wordMarks = this._loadMarks();
     this.writingChecked = false;
 
@@ -178,13 +180,106 @@ export class WritingPracticeModule {
     this.blankVerified = false;
   }
 
-  // --- Review marks: persisted set of "context|lineId|wordIdx" keys ---
+  // --- Review marks: persisted map of "context|lineId|wordIdx" -> mistake type ---
   _loadMarks() {
-    try { return new Set(JSON.parse(localStorage.getItem('writing-marks') || '[]')); }
-    catch { return new Set(); }
+    try {
+      const raw = JSON.parse(localStorage.getItem('writing-marks') || '[]');
+      // Older versions stored a plain array of keys (untyped marks); read those
+      // as 'word' mistakes so existing marks survive the upgrade.
+      return new Map(raw.map(entry =>
+        Array.isArray(entry) ? entry : [entry, 'word']
+      ));
+    }
+    catch { return new Map(); }
   }
   _saveMarks() {
-    localStorage.setItem('writing-marks', JSON.stringify([...this.wordMarks]));
+    localStorage.setItem('writing-marks', JSON.stringify([...this.wordMarks.entries()]));
+  }
+  // CSS classes for a marked word/dot: base 'marked' plus the per-type class.
+  _markClasses(key) {
+    const type = this.wordMarks.get(key);
+    return type ? ` marked marked-${type}` : '';
+  }
+
+  // Sets (or clears, when type is null / re-selected) the mistake type for a word and
+  // patches every element carrying its key — dot, faint trace word, answer word, page
+  // overlay clone — without a re-render that would wipe the ink.
+  _setMark(key, type) {
+    const prevType = this.wordMarks.get(key);
+    const nextType = (type == null || prevType === type) ? null : type;
+    if (nextType) this.wordMarks.set(key, nextType); else this.wordMarks.delete(key);
+    this._saveMarks();
+    this.container.querySelectorAll(`[data-key="${CSS.escape(key)}"]`).forEach(el => {
+      if (prevType) el.classList.remove(`marked-${prevType}`);
+      el.classList.toggle('marked', !!nextType);
+      if (nextType) el.classList.add(`marked-${nextType}`);
+    });
+  }
+
+  // Popup under a review dot to pick which kind of mistake was made on that word.
+  // Same look and mistake types as the page-map word context menu.
+  _showMarkMenu(dot, key) {
+    this._closeMarkMenu();
+    const currentType = this.wordMarks.get(key);
+
+    const markButtons = MISTAKE_TYPES.map(({ type, label, cssVar }) => `
+      <button class="context-menu-item mark-option ${currentType === type ? 'active' : ''}"
+              style="color: var(${cssVar});" data-type="${type}">
+        <span class="mark-swatch mark-swatch-${type}"></span>${label}${currentType === type ? ' ✓' : ''}
+      </button>
+    `).join('');
+
+    const menu = document.createElement('div');
+    menu.id = 'writing-mark-menu';
+    menu.className = 'mushaf-context-menu';
+    menu.style.position = 'fixed';
+    menu.style.zIndex = '9999';
+    menu.style.padding = '8px';
+    menu.style.minWidth = '180px';
+    menu.style.display = 'flex';
+    menu.style.flexDirection = 'column';
+    menu.style.gap = '4px';
+    menu.innerHTML = `
+      <div style="font-size: 0.8rem; font-weight: bold; color: var(--accent-gold); padding: 4px 8px 8px 8px; border-bottom: 1px solid var(--border-color); margin-bottom: 4px; text-align: center;">
+        Mark Mistake
+      </div>
+      ${markButtons}
+      ${currentType ? `<button class="context-menu-item" data-type="">Unmark Word</button>` : ''}
+    `;
+    document.body.appendChild(menu);
+
+    // Anchor below the dot, clamped to the viewport
+    const dotRect = dot.getBoundingClientRect();
+    menu.style.left = `${dotRect.left + dotRect.width / 2}px`;
+    menu.style.top = `${dotRect.bottom + 6}px`;
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 10}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${dotRect.top - rect.height - 6}px`;
+    if (rect.left < 0) menu.style.left = '10px';
+    if (parseFloat(menu.style.top) < 0) menu.style.top = '10px';
+
+    menu.querySelectorAll('.context-menu-item').forEach(item => {
+      item.addEventListener('click', () => {
+        this._setMark(key, item.dataset.type || null);
+        this._closeMarkMenu();
+      });
+    });
+
+    const outsideClickListener = (e) => {
+      if (!menu.contains(e.target)) {
+        this._closeMarkMenu();
+        document.removeEventListener('mousedown', outsideClickListener);
+        document.removeEventListener('touchstart', outsideClickListener);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener('mousedown', outsideClickListener);
+      document.addEventListener('touchstart', outsideClickListener);
+    }, 10);
+  }
+
+  _closeMarkMenu() {
+    document.getElementById('writing-mark-menu')?.remove();
   }
 
   // --- Paper mode: persisted 'dark' | 'cream' sheet preference ---
@@ -206,6 +301,7 @@ export class WritingPracticeModule {
   }
 
   render() {
+    this._closeMarkMenu();
     const q = this.items[this.currentIndex];
     if (!q) return;
 
@@ -227,7 +323,7 @@ export class WritingPracticeModule {
       ${this.pageData ? this.renderMushafFontStyles() : ''}
 
       <!-- Main Activity Box -->
-      <div class="card" style="width: 100%; max-width: 800px; margin: 0 auto; padding: 0;">
+      <div class="card" style="width: 100%; padding: 0;">
         ${this.renderActivityContent()}
       </div>
     `;
@@ -300,13 +396,15 @@ export class WritingPracticeModule {
     if (!avail) return;
 
     const contentWidth = ghost.scrollWidth;
-    if (contentWidth > avail) {
-      const baseFs = parseFloat(getComputedStyle(ghost).fontSize);
-      const fs = (baseFs * avail / contentWidth) + 'px';
-      ghost.style.fontSize = fs;
-      // Keep the dot overlay at the exact same size so every dot stays over its word.
-      if (mark) mark.style.fontSize = fs;
-    }
+    if (!contentWidth) return;
+    const baseFs = parseFloat(getComputedStyle(ghost).fontSize);
+    // Scale up as well as down so the line fills the full canvas width, but cap
+    // the size so short lines (and their diacritics) still fit the sheet height.
+    const maxFs = wrapper.clientHeight * 0.42;
+    const fs = Math.min(baseFs * avail / contentWidth, maxFs) + 'px';
+    ghost.style.fontSize = fs;
+    // Keep the dot overlay at the exact same size so every dot stays over its word.
+    if (mark) mark.style.fontSize = fs;
   }
 
   // Returns the current line's words as { text, font } tokens. In page mode these are
@@ -333,7 +431,7 @@ export class WritingPracticeModule {
     const lineId = this._lineIdForItem();
     return tokens.map((t, i) => {
       const key = this._markKey(lineId, i);
-      const marked = this.wordMarks.has(key) ? ' marked' : '';
+      const marked = this._markClasses(key);
       const style = t.font ? `font-family: '${t.font}';` : '';
       return `<span class="answer-word${marked}" data-key="${key}" style="${style}">${t.text}</span>`;
     }).join(' ');
@@ -346,7 +444,7 @@ export class WritingPracticeModule {
     return tokens.map((t, i) => {
       const key = this._markKey(lineId, i);
       const active = i === this.currentLineWordIdx ? ' ghost-word-active' : '';
-      const marked = this.wordMarks.has(key) ? ' marked' : '';
+      const marked = this._markClasses(key);
       const style = t.font ? `font-family: '${t.font}';` : '';
       return `<span class="ghost-word${active}${marked}" data-key="${key}" style="${style}">${t.text}</span>`;
     }).join(' ');
@@ -359,9 +457,9 @@ export class WritingPracticeModule {
     const lineId = this._lineIdForItem();
     return tokens.map((t, i) => {
       const key = this._markKey(lineId, i);
-      const marked = this.wordMarks.has(key) ? ' marked' : '';
+      const marked = this._markClasses(key);
       const style = t.font ? `font-family: '${t.font}';` : '';
-      return `<span class="ghost-word" style="${style}">${t.text}<button class="word-mark-dot${marked}" data-key="${key}" title="Flag this word for review"></button></span>`;
+      return `<span class="ghost-word" style="${style}">${t.text}<button class="word-mark-dot${marked}" data-key="${key}" title="Mark a mistake on this word"></button></span>`;
     }).join(' ');
   }
 
@@ -493,7 +591,9 @@ export class WritingPracticeModule {
         </div>
         <div class="pagewrite-slider-col">
           <span class="pagewrite-slider-hint">▲</span>
-          <input type="range" id="pagewrite-slider" class="pagewrite-slider" min="0" max="1000" value="0" aria-label="Scroll page up and down">
+          <div class="pagewrite-slider-track" id="pagewrite-slider-track">
+            <input type="range" id="pagewrite-slider" class="pagewrite-slider" min="0" max="1000" value="0" aria-label="Scroll page up and down">
+          </div>
           <span class="pagewrite-slider-hint">▼</span>
         </div>
       </div>`;
@@ -507,7 +607,7 @@ export class WritingPracticeModule {
       lineObj.words.forEach(word => {
         if (word.type === 'word') {
           const key = this._markKey(`L${lineObj.line}`, wordIdx);
-          const marked = this.wordMarks.has(key) ? ' marked' : '';
+          const marked = this._markClasses(key);
           inner += `<span class="ghost-word${marked}" data-key="${key}" style="font-family: '${word.font}';">${word.char}</span>`;
           wordIdx++;
         } else if (word.type === 'end') {
@@ -534,8 +634,8 @@ export class WritingPracticeModule {
       lineObj.words.forEach(word => {
         if (word.type === 'word') {
           const key = this._markKey(`L${lineObj.line}`, wordIdx);
-          const marked = this.wordMarks.has(key) ? ' marked' : '';
-          inner += `<span class="ghost-word${marked}" data-key="${key}" style="font-family: '${word.font}';">${word.char}<button class="word-mark-dot${marked}" data-key="${key}" title="Flag this word for review"></button></span>`;
+          const marked = this._markClasses(key);
+          inner += `<span class="ghost-word${marked}" data-key="${key}" style="font-family: '${word.font}';">${word.char}<button class="word-mark-dot${marked}" data-key="${key}" title="Mark a mistake on this word"></button></span>`;
           wordIdx++;
         } else if (word.type === 'end') {
           const verseNum = word.verse_key ? word.verse_key.split(':')[1] : '';
@@ -754,13 +854,24 @@ export class WritingPracticeModule {
       this._syncPageSlider();
     };
 
-    sizeCanvas();
+    // The scroll slider is a horizontal range rotated 90° (so it works on every
+    // iPad, unlike CSS `writing-mode`). Its on-screen length is its CSS width, so
+    // stretch that to the track's height to fill the column.
+    const track = document.getElementById('pagewrite-slider-track');
+    const sizeSlider = () => {
+      if (slider && track && track.clientHeight) slider.style.width = track.clientHeight + 'px';
+    };
+
+    const relayout = () => { sizeCanvas(); sizeSlider(); };
+
+    relayout();
     if (document.fonts?.ready) {
-      document.fonts.ready.then(() => sizeCanvas());
+      document.fonts.ready.then(() => relayout());
     }
     // A couple of retries in case layout/fonts settle slightly later
-    setTimeout(sizeCanvas, 200);
-    setTimeout(sizeCanvas, 600);
+    setTimeout(relayout, 200);
+    setTimeout(relayout, 600);
+    window.addEventListener('resize', relayout);
 
     // Side slider drives vertical scroll
     slider?.addEventListener('input', () => {
@@ -991,18 +1102,11 @@ export class WritingPracticeModule {
         sl.addEventListener('pointerdown', (e) => e.stopPropagation());
       });
 
-      // Golden review dots: click to flag/unflag a word as red across all views
+      // Golden review dots: click to open the mistake-type picker for that word
       this.container.querySelectorAll('.word-mark-dot').forEach(dot => {
         dot.addEventListener('click', (e) => {
           e.stopPropagation();
-          const key = dot.dataset.key;
-          const nowMarked = !this.wordMarks.has(key);
-          if (nowMarked) this.wordMarks.add(key); else this.wordMarks.delete(key);
-          this._saveMarks();
-          // Patch every element carrying this key (dot, faint trace word, answer word)
-          // so the red state updates without a re-render that would wipe the ink.
-          this.container.querySelectorAll(`[data-key="${CSS.escape(key)}"]`)
-            .forEach(el => el.classList.toggle('marked', nowMarked));
+          this._showMarkMenu(dot, dot.dataset.key);
         });
       });
 
