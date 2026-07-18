@@ -2,7 +2,7 @@
 // Handles local caching of page layout JSONs, Quran text, and user learning states.
 
 const DB_NAME = 'quran_firm_plant_db';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 class QuranDB {
   constructor() {
@@ -53,6 +53,12 @@ class QuranDB {
         // Key: page number, Value: { "surah:ayah:position": "translation text" }
         if (!db.objectStoreNames.contains('word_translations')) {
           db.createObjectStore('word_translations', { keyPath: 'page' });
+        }
+
+        // Store per-page tajweed-coloured word markup
+        // Key: page number, Value: { "surah:ayah:position": "<tajweed class=...>..." }
+        if (!db.objectStoreNames.contains('tajweed')) {
+          db.createObjectStore('tajweed', { keyPath: 'page' });
         }
       };
     });
@@ -176,6 +182,29 @@ class QuranDB {
     return new Promise((resolve, reject) => {
       const transaction = this.db.transaction(['word_translations'], 'readwrite');
       const store = transaction.objectStore('word_translations');
+      const request = store.put({ page: pageNumber, map });
+      request.onsuccess = () => resolve();
+      request.onerror = (e) => reject(e);
+    });
+  }
+
+  // --- Tajweed Markup Operations ---
+  async getTajweed(pageNumber) {
+    await this.initPromise;
+    return new Promise((resolve) => {
+      const transaction = this.db.transaction(['tajweed'], 'readonly');
+      const store = transaction.objectStore('tajweed');
+      const request = store.get(pageNumber);
+      request.onsuccess = () => resolve(request.result ? request.result.map : null);
+      request.onerror = () => resolve(null);
+    });
+  }
+
+  async saveTajweed(pageNumber, map) {
+    await this.initPromise;
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(['tajweed'], 'readwrite');
+      const store = transaction.objectStore('tajweed');
       const request = store.put({ page: pageNumber, map });
       request.onsuccess = () => resolve();
       request.onerror = (e) => reject(e);

@@ -67,6 +67,57 @@ const FALLBACK_MUTASHABIHAT = [
   }
 ];
 
+// Split a verse's `text_uthmani_tajweed` HTML into one markup fragment per word.
+//
+// The API returns tajweed rules as <tajweed class="..."> spans over a whole
+// verse, and some rules deliberately straddle a word boundary (idgham/ikhafa
+// join the end of one word to the start of the next, e.g.
+// `<tajweed class=ikhafa>عًا ش</tajweed>`). So a plain split on spaces would
+// tear the markup; instead we close the open span before the break and reopen
+// it on the next word. Tajweed markup is flat (never nested), which is what
+// lets a single open/close pair carry across the boundary.
+export function splitTajweedIntoWords(html) {
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+  const root = doc.body.firstChild;
+  if (!root) return [];
+
+  const words = [];
+  let current = '';
+
+  const flush = () => {
+    const trimmed = current.trim();
+    if (trimmed) words.push(trimmed);
+    current = '';
+  };
+
+  const walk = (node, openTag, closeTag) => {
+    node.childNodes.forEach(child => {
+      if (child.nodeType === 3) { // text node
+        child.textContent.split(' ').forEach((part, i) => {
+          if (i > 0) {
+            current += closeTag;
+            flush();
+            current = openTag;
+          }
+          current += part;
+        });
+      } else if (child.nodeType === 1) { // element node
+        const tag = child.tagName.toLowerCase();
+        const cls = child.getAttribute('class') || '';
+        const open = `<${tag} class="${cls}">`;
+        const close = `</${tag}>`;
+        current += open;
+        walk(child, open, close);
+        current += close;
+      }
+    });
+  };
+
+  walk(root, '', '');
+  flush();
+  return words;
+}
+
 export class QuranLoader {
   constructor() {
     this.isSeeded = false;
@@ -240,6 +291,44 @@ export class QuranLoader {
       (verse.words || []).forEach(word => {
         if (word.char_type_name !== 'word' || !word.translation?.text) return;
         map[`${verse.verse_key}:${word.position}`] = word.translation.text;
+      });
+    });
+    return map;
+  }
+
+  // Load (and cache) the tajweed-coloured markup for a page. Keyed by
+  // "surah:ayah:position" exactly like the word translation map, so the same
+  // data overlays either mushaf edition — both normalize their words to the
+  // standard verse_key/position numbering.
+  async loadTajweed(pageNumber) {
+    if (pageNumber < 1 || pageNumber > 604) return {};
+
+    const cached = await db.getTajweed(pageNumber);
+    if (cached) return cached;
+
+    try {
+      const map = await this.fetchTajweed(pageNumber);
+      await db.saveTajweed(pageNumber, map);
+      return map;
+    } catch (e) {
+      console.error(e);
+      return {};
+    }
+  }
+
+  async fetchTajweed(pageNumber) {
+    const url = `https://api.quran.com/api/v4/verses/by_page/${pageNumber}?fields=text_uthmani_tajweed`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch tajweed for page ${pageNumber}`);
+    const data = await res.json();
+
+    const map = {};
+    (data.verses || []).forEach(verse => {
+      if (!verse.text_uthmani_tajweed) return;
+      splitTajweedIntoWords(verse.text_uthmani_tajweed).forEach((wordHtml, idx) => {
+        // The API emits words in position order starting at 1, with the ayah
+        // end marker as the final token.
+        map[`${verse.verse_key}:${idx + 1}`] = wordHtml;
       });
     });
     return map;

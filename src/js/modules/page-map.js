@@ -30,9 +30,15 @@ export class PageMapModule {
     
     this.pageData = null;
     this.wordTranslations = {}; // "surah:ayah:position" -> English gloss, for hover/tap tooltip
+    this.tajweed = {};          // "surah:ayah:position" -> tajweed-coloured markup
 
     // Selected mushaf edition (v1 or v2)
     this.currentEdition = localStorage.getItem('mushaf-edition') || 'v2';
+
+    // Tajweed colouring. Independent of the edition: the markup is keyed by
+    // verse/position, so it overlays either mushaf. Turning it on swaps the
+    // per-page glyph fonts for Uthmani text that can be coloured per letter.
+    this.tajweedMode = localStorage.getItem('pagemap-tajweed-mode') === '1';
     
     // Page history state
     this.showHistory = false;
@@ -136,12 +142,14 @@ export class PageMapModule {
 
       await this.loadRepetitionData();
 
-      const [pageData, wordTranslations] = await Promise.all([
+      const [pageData, wordTranslations, tajweed] = await Promise.all([
         quranLoader.loadPage(pageNumber, this.currentEdition),
-        quranLoader.loadWordTranslations(pageNumber)
+        quranLoader.loadWordTranslations(pageNumber),
+        this.tajweedMode ? quranLoader.loadTajweed(pageNumber) : Promise.resolve({})
       ]);
       this.pageData = pageData;
       this.wordTranslations = wordTranslations || {};
+      this.tajweed = tajweed || {};
       if (!this.pageData) {
         throw new Error('Failed to load layout from CDN or cache');
       }
@@ -197,6 +205,12 @@ export class PageMapModule {
                 <path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>
               </svg>
               Translations
+            </button>
+            <button id="sil-tajweed-toggle-btn" class="seg-btn toggle-btn ${this.tajweedMode ? 'active' : ''}" title="Colour the letters by tajweed rule (works with either mushaf edition)" aria-pressed="${this.tajweedMode}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2 6 12a6 6 0 1 0 12 0z"/>
+              </svg>
+              Tajweed
             </button>
           </div>
 
@@ -849,8 +863,11 @@ export class PageMapModule {
       });
     });
 
+    // Tajweed mode renders Uthmani text rather than the one-glyph-per-word
+    // page fonts (a single glyph can't be coloured letter by letter), so the
+    // @font-face downloads are skipped entirely.
     let fontStyles = '';
-    fonts.forEach(fontName => {
+    if (!this.tajweedMode) fonts.forEach(fontName => {
       let fontUrl;
       let format;
       
@@ -901,14 +918,30 @@ export class PageMapModule {
           // Render the exact QCF4 character (word.char) to get perfect Madinah Mushaf calligraphy
           const markType = this.markedWords.get(wordKey);
           const isShown = this.isWordShown(wordKey);
+
+          // In tajweed mode substitute the coloured Uthmani markup for the
+          // glyph. Falls back to the layout's own text if this word has no
+          // entry, so a word-count mismatch degrades to uncoloured text
+          // instead of a blank box.
+          let inner;
+          let fontFamily;
+          if (this.tajweedMode) {
+            const tajweedHtml = this.tajweed[`${word.verse_key}:${word.position}`];
+            inner = `<span class="word-glyph tajweed-word">${tajweedHtml || word.text}</span>`;
+            fontFamily = 'var(--font-arabic)';
+          } else {
+            inner = `<span class="word-glyph">${word.char}</span>`;
+            fontFamily = `'${word.font}'`;
+          }
+
           wordsHtml += `
             <span class="mushaf-word-box ${markType ? `marked-${markType}` : ''} ${isShown ? 'revealed' : ''}"
                   data-key="${wordKey}"
                   data-verse-key="${word.verse_key || ''}"
                   data-position="${word.position || ''}"
                   data-text="${word.text}"
-                  style="font-family: '${word.font}'; font-size: clamp(1.1rem, 4vw, 1.65rem); line-height: 1; flex-shrink: 1;">
-              <span class="word-glyph">${word.char}</span>
+                  style="font-family: ${fontFamily}; font-size: clamp(1.1rem, 4vw, 1.65rem); line-height: 1; flex-shrink: 1;">
+              ${inner}
             </span>
           `;
         }
@@ -962,6 +995,30 @@ export class PageMapModule {
         <div class="mushaf-page-grid">
           ${linesHtml}
         </div>
+      </div>
+      ${this.tajweedMode ? this.renderTajweedLegend() : ''}
+    `;
+  }
+
+  renderTajweedLegend() {
+    const rules = [
+      ['--tj-ghunnah', 'Ghunnah'],
+      ['--tj-qalqalah', 'Qalqalah'],
+      ['--tj-ikhafa', 'Ikhfa'],
+      ['--tj-idgham', 'Idgham (with ghunnah)'],
+      ['--tj-idgham-quiet', 'Idgham (without ghunnah)'],
+      ['--tj-iqlab', 'Iqlab'],
+      ['--tj-madda-normal', 'Madd (2 counts)'],
+      ['--tj-madda-permissible', 'Madd (permissible)'],
+      ['--tj-madda-obligatory', 'Madd (obligatory)'],
+      ['--tj-madda-necessary', 'Madd (necessary)'],
+      ['--tj-silent', 'Silent / hamzat wasl'],
+    ];
+    return `
+      <div class="tajweed-legend">
+        ${rules.map(([cssVar, label]) =>
+          `<span><i style="background-color: var(${cssVar});"></i>${label}</span>`
+        ).join('')}
       </div>
     `;
   }
@@ -1174,6 +1231,22 @@ export class PageMapModule {
         localStorage.setItem('pagemap-show-glosses', this.showGlosses ? '1' : '0');
         e.currentTarget.classList.toggle('active', this.showGlosses);
         e.currentTarget.setAttribute('aria-pressed', this.showGlosses);
+      });
+
+      // Tajweed toggle: swaps glyph rendering for coloured Uthmani text. The
+      // markup is fetched lazily the first time it's switched on, then cached.
+      // Reveal state is keyed by line/index, so it survives the re-render.
+      document.getElementById('sil-tajweed-toggle-btn')?.addEventListener('click', async (e) => {
+        this.tajweedMode = !this.tajweedMode;
+        localStorage.setItem('pagemap-tajweed-mode', this.tajweedMode ? '1' : '0');
+        e.currentTarget.classList.toggle('active', this.tajweedMode);
+        e.currentTarget.setAttribute('aria-pressed', this.tajweedMode);
+
+        if (this.tajweedMode && !Object.keys(this.tajweed).length) {
+          this.tajweed = await quranLoader.loadTajweed(this.currentPage) || {};
+        }
+        this.render();
+        this.setupEvents();
       });
 
       // Reading Sliders toggle: adds/removes the per-line reveal sliders

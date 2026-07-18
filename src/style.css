@@ -842,6 +842,79 @@ button {
   clip-path: inset(-40% 0 -40% calc(100% - var(--reveal-pct, 0%)));
 }
 
+/* --- Tajweed colouring (Page Map) ---
+   The Quran.com API marks each rule with a <tajweed class="..."> span. Hues
+   follow the conventional tajweed scheme, darkened for legibility on the
+   parchment background. */
+:root {
+  --tj-ghunnah: hsl(25, 90%, 40%);
+  --tj-qalqalah: hsl(355, 75%, 42%);
+  --tj-ikhafa: hsl(288, 60%, 40%);
+  --tj-idgham: hsl(140, 65%, 26%);
+  --tj-idgham-quiet: hsl(175, 55%, 26%);
+  --tj-iqlab: hsl(200, 72%, 33%);
+  --tj-madda-normal: hsl(220, 70%, 45%);
+  --tj-madda-permissible: hsl(225, 75%, 40%);
+  --tj-madda-obligatory: hsl(230, 80%, 35%);
+  --tj-madda-necessary: hsl(235, 85%, 29%);
+  --tj-silent: hsl(30, 10%, 55%);
+}
+
+/* The word box hides its text with `color: transparent`, so tajweed hues must
+   not paint until the word is actually revealed — otherwise the silhouette
+   would leak the letters and defeat the memorisation drill. */
+.tajweed-word tajweed {
+  color: inherit;
+  white-space: nowrap;
+}
+
+.mushaf-word-box.revealed .tajweed-word tajweed,
+.mushaf-word-box.partial .tajweed-word tajweed {
+  color: var(--tj-rule, inherit);
+}
+
+.tajweed-word tajweed[class~="ghunnah"]            { --tj-rule: var(--tj-ghunnah); }
+.tajweed-word tajweed[class~="qalaqah"]            { --tj-rule: var(--tj-qalqalah); }
+.tajweed-word tajweed[class~="ikhafa"],
+.tajweed-word tajweed[class~="ikhafa_shafawi"]     { --tj-rule: var(--tj-ikhafa); }
+.tajweed-word tajweed[class~="idgham_ghunnah"],
+.tajweed-word tajweed[class~="idgham_shafawi"]     { --tj-rule: var(--tj-idgham); }
+.tajweed-word tajweed[class~="idgham_wo_ghunnah"],
+.tajweed-word tajweed[class~="idgham_mutajanisayn"],
+.tajweed-word tajweed[class~="idgham_mutaqaribayn"] { --tj-rule: var(--tj-idgham-quiet); }
+.tajweed-word tajweed[class~="iqlab"]              { --tj-rule: var(--tj-iqlab); }
+.tajweed-word tajweed[class~="madda_normal"]       { --tj-rule: var(--tj-madda-normal); }
+.tajweed-word tajweed[class~="madda_permissible"]  { --tj-rule: var(--tj-madda-permissible); }
+.tajweed-word tajweed[class~="madda_obligatory"]   { --tj-rule: var(--tj-madda-obligatory); }
+.tajweed-word tajweed[class~="madda_necessary"]    { --tj-rule: var(--tj-madda-necessary); }
+.tajweed-word tajweed[class~="ham_wasl"],
+.tajweed-word tajweed[class~="laam_shamsiyah"],
+.tajweed-word tajweed[class~="slnt"]               { --tj-rule: var(--tj-silent); }
+
+/* Legend under the page, shown only while tajweed colouring is on */
+.tajweed-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  justify-content: center;
+  max-width: 700px;
+  margin: 12px auto 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.tajweed-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tajweed-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
 /* Per-line reading slider: sits on the line's bottom edge; drag right-to-left
    at your reading pace to unhide the line gradually. */
 .line-reveal-slider {
