@@ -10,7 +10,6 @@ import { SURAH_LIST } from '../components/surah-selector.js';
 // Fixed total for the Hafs mushaf; equals the sum of all 114 surah verse counts.
 export const TOTAL_QURAN_VERSES = 6236;
 
-const STATUS_CYCLE = { none: 'memorizing', memorizing: 'memorized', memorized: 'none' };
 const STATUS_LABELS = { none: 'Not started', memorizing: 'Memorizing', memorized: 'Memorized' };
 
 export class MemorizationModule {
@@ -23,6 +22,9 @@ export class MemorizationModule {
     this.expandedSurah = null;   // surah number whose verse list is open
     this.surahTextCache = new Map(); // surah -> sorted ayah records from the text store
     this.pickerOpen = false;
+    this.pickerSelected = new Set(); // surah numbers ticked for bulk marking
+    this.pickerAnchor = null;        // last ticked surah, for shift-click ranges
+    this.applying = false;           // guards against repeated bulk-apply clicks
     this.rangeError = null;
   }
 
@@ -84,6 +86,15 @@ export class MemorizationModule {
       this.surahTextCache.set(surahNum, await db.getSurahText(surahNum));
     }
     return this.surahTextCache.get(surahNum);
+  }
+
+  // Load any uncached surahs in one DB pass. Much cheaper than awaiting
+  // getSurahTextCached in a loop, which rescans the whole text store each time.
+  async primeSurahTextCache(surahNums) {
+    const missing = surahNums.filter(n => !this.surahTextCache.has(n));
+    if (missing.length === 0) return;
+    const fetched = await db.getSurahTexts(missing);
+    fetched.forEach((ayahs, num) => this.surahTextCache.set(num, ayahs));
   }
 
   surahMeta(surahNum) {
@@ -161,7 +172,7 @@ export class MemorizationModule {
       const needed = [...this.data.values()]
         .filter(rec => Object.values(rec.verses).some(v => v.status === 'memorizing'))
         .map(rec => rec.surah);
-      await Promise.all(needed.map(s => this.getSurahTextCached(s)));
+      await this.primeSurahTextCache(needed);
     } else if (this.expandedSurah != null) {
       await this.getSurahTextCached(this.expandedSurah);
     }
@@ -314,11 +325,31 @@ export class MemorizationModule {
         </span>
         ${rep?.total ? `<span class="memo-rep-badge" title="Repetitions saved on the Page Map counter">${rep.total}×${rep.today ? ` · ${rep.today} today` : ''}</span>` : ''}
         <span class="memo-status-col">
-          <button class="memo-status-btn is-${status}" data-action="cycle-verse" data-surah="${surahNum}" data-ayah="${ayah}"
-                  title="Click to change status">${STATUS_LABELS[status]}</button>
+          ${this.renderStatusPicker(surahNum, ayah, status)}
           ${dateLine}
         </span>
       </div>
+    `;
+  }
+
+  // Status chip + drop-down. Picking a status directly beats cycling through
+  // the other two to reach it.
+  renderStatusPicker(surahNum, ayah, status) {
+    const options = ['memorized', 'memorizing', 'none'].map(s => `
+      <button class="memo-status-option is-${s} ${s === status ? 'current' : ''}" role="menuitem"
+              data-action="set-status" data-surah="${surahNum}" data-ayah="${ayah}" data-status="${s}">
+        <span class="memo-status-swatch is-${s}"></span>${STATUS_LABELS[s]}
+      </button>
+    `).join('');
+
+    return `
+      <span class="memo-status-wrap">
+        <button class="memo-status-btn is-${status}" data-action="open-status-menu"
+                aria-haspopup="menu" aria-expanded="false" title="Change status">
+          ${STATUS_LABELS[status]}<span class="memo-status-caret" aria-hidden="true">▾</span>
+        </button>
+        <span class="memo-status-menu" role="menu">${options}</span>
+      </span>
     `;
   }
 
@@ -449,16 +480,22 @@ export class MemorizationModule {
 
   renderPicker() {
     const tracked = new Set(this.data.keys());
-    const rows = SURAH_LIST.map(s => `
-      <button class="memo-picker-row ${tracked.has(s.id) ? 'tracked' : ''}" data-action="pick-surah" data-surah="${s.id}"
+    const rows = SURAH_LIST.map(s => {
+      const selected = this.pickerSelected.has(s.id);
+      return `
+      <button class="memo-picker-row ${tracked.has(s.id) ? 'tracked' : ''} ${selected ? 'selected' : ''}" data-action="pick-surah" data-surah="${s.id}"
               data-search="${s.id} ${s.nameEn.toLowerCase()} ${s.name}">
+        <span class="memo-picker-check ${selected ? 'checked' : ''}" data-action="toggle-pick" data-surah="${s.id}"
+              title="Tick to include in bulk marking (Shift-click ticks a range)"></span>
         <span class="memo-picker-num">${s.id}</span>
         <span>${s.nameEn}</span>
         <span class="quran-text memo-picker-arabic" dir="rtl">${s.name}</span>
         ${tracked.has(s.id) ? '<span class="memo-picker-tracked">tracked</span>' : ''}
       </button>
-    `).join('');
+    `;
+    }).join('');
 
+    const n = this.pickerSelected.size;
     return `
       <div class="memo-modal-backdrop" data-action="close-picker"></div>
       <div class="modal active memo-picker-modal">
@@ -468,17 +505,82 @@ export class MemorizationModule {
         </div>
         <div class="modal-body">
           <input type="text" class="search-input" id="memo-picker-search" placeholder="Search by number or name..." autocomplete="off">
+          <p class="memo-picker-hint">Click a surah to open its verse list — or tick a box to start a bulk selection. While anything is ticked, clicking a row ticks it too (Shift-click ticks a whole range); mark them all at once below.</p>
           <div class="memo-picker-list">${rows}</div>
+        </div>
+        <div class="memo-picker-footer ${n ? '' : 'hidden'}">
+          <span id="memo-picker-count">${n} selected</span>
+          <select id="memo-picker-status" class="memo-range-select">
+            <option value="memorized">Memorized</option>
+            <option value="memorizing">Memorizing</option>
+          </select>
+          <button class="btn-outline" data-action="clear-picks">Clear</button>
+          <button class="btn-gold" id="memo-picker-apply" data-action="apply-picks">Mark ${n} surah${n === 1 ? '' : 's'}</button>
         </div>
       </div>
     `;
   }
 
+  togglePick(surah, shiftKey, root) {
+    if (shiftKey && this.pickerAnchor != null && this.pickerAnchor !== surah) {
+      // Tick everything between the last tick and this one, skipping
+      // rows hidden by the search filter.
+      const lo = Math.min(this.pickerAnchor, surah);
+      const hi = Math.max(this.pickerAnchor, surah);
+      root.querySelectorAll('.memo-picker-row').forEach(row => {
+        const s = parseInt(row.dataset.surah);
+        if (s >= lo && s <= hi && row.style.display !== 'none') this.pickerSelected.add(s);
+      });
+    } else if (this.pickerSelected.has(surah)) {
+      this.pickerSelected.delete(surah);
+    } else {
+      this.pickerSelected.add(surah);
+    }
+    this.pickerAnchor = surah;
+    this.updatePickerSelectionUI(root);
+  }
+
+  // In-place update of tick marks and the footer, so toggling doesn't wipe
+  // the search filter text or the list's scroll position via a full render.
+  updatePickerSelectionUI(root) {
+    const n = this.pickerSelected.size;
+    root.querySelectorAll('.memo-picker-row').forEach(row => {
+      const on = this.pickerSelected.has(parseInt(row.dataset.surah));
+      row.classList.toggle('selected', on);
+      row.querySelector('.memo-picker-check')?.classList.toggle('checked', on);
+    });
+    root.querySelector('.memo-picker-footer')?.classList.toggle('hidden', n === 0);
+    const count = root.querySelector('#memo-picker-count');
+    if (count) count.textContent = `${n} selected`;
+    const apply = root.querySelector('#memo-picker-apply');
+    if (apply) apply.textContent = `Mark ${n} surah${n === 1 ? '' : 's'}`;
+  }
+
   // --- Events ---
+
+  closeStatusMenus(root) {
+    root.querySelectorAll('.memo-status-wrap.open').forEach(w => {
+      w.classList.remove('open');
+      w.querySelector('.memo-status-btn')?.setAttribute('aria-expanded', 'false');
+    });
+  }
 
   bindEvents() {
     const root = this.container.querySelector('.memo-root');
     if (!root) return;
+
+    // A click or Escape anywhere else dismisses an open status drop-down.
+    // Re-registered each render, so drop the previous listeners first.
+    if (this.dismissHandler) {
+      document.removeEventListener('click', this.dismissHandler, true);
+      document.removeEventListener('keydown', this.escHandler);
+    }
+    this.dismissHandler = (e) => {
+      if (!e.target.closest('.memo-status-wrap')) this.closeStatusMenus(root);
+    };
+    this.escHandler = (e) => { if (e.key === 'Escape') this.closeStatusMenus(root); };
+    document.addEventListener('click', this.dismissHandler, true);
+    document.addEventListener('keydown', this.escHandler);
 
     root.addEventListener('click', async (e) => {
       const el = e.target.closest('[data-action]');
@@ -524,10 +626,21 @@ export class MemorizationModule {
           break;
         }
 
-        case 'cycle-verse': {
+        case 'open-status-menu': {
+          const wrap = el.closest('.memo-status-wrap');
+          const wasOpen = wrap.classList.contains('open');
+          this.closeStatusMenus(root);
+          wrap.classList.toggle('open', !wasOpen);
+          el.setAttribute('aria-expanded', String(!wasOpen));
+          break;
+        }
+
+        case 'set-status': {
+          this.closeStatusMenus(root);
           const ayah = parseInt(el.dataset.ayah);
-          const next = STATUS_CYCLE[this.getStatus(surah, ayah)];
-          await this.setVerseStatus(surah, ayah, next);
+          const status = el.dataset.status;
+          if (status === this.getStatus(surah, ayah)) break;
+          await this.setVerseStatus(surah, ayah, status);
           this.render();
           break;
         }
@@ -543,20 +656,70 @@ export class MemorizationModule {
 
         case 'open-picker':
           this.pickerOpen = true;
+          this.pickerSelected.clear();
+          this.pickerAnchor = null;
           this.render();
           break;
 
         case 'close-picker':
           this.pickerOpen = false;
+          this.pickerSelected.clear();
           this.render();
           break;
 
         case 'pick-surah':
+          // While a bulk selection is in progress, a click anywhere on a row
+          // toggles it instead of opening the verse list — otherwise narrowly
+          // missing the checkbox closes the modal and loses the selection.
+          if (this.pickerSelected.size > 0) {
+            this.togglePick(surah, e.shiftKey, root);
+            break;
+          }
           this.pickerOpen = false;
+          this.pickerSelected.clear();
           this.expandedSurah = surah;
           this.view = 'overview';
           this.render();
           break;
+
+        case 'toggle-pick':
+          this.togglePick(surah, e.shiftKey, root);
+          break;
+
+        case 'clear-picks':
+          this.pickerSelected.clear();
+          this.pickerAnchor = null;
+          this.updatePickerSelectionUI(root);
+          break;
+
+        case 'apply-picks': {
+          // Marking many surahs takes a moment; ignore repeat clicks so the
+          // work isn't queued up several times over.
+          if (this.applying) break;
+          const status = document.getElementById('memo-picker-status')?.value || 'memorized';
+          const picked = [...this.pickerSelected].sort((a, b) => a - b);
+          this.applying = true;
+          const applyBtn = root.querySelector('#memo-picker-apply');
+          if (applyBtn) {
+            applyBtn.disabled = true;
+            applyBtn.textContent = `Marking ${picked.length}...`;
+          }
+          try {
+            await this.primeSurahTextCache(picked);
+            for (const s of picked) {
+              const total = (await this.getSurahTextCached(s)).length;
+              await this.setRangeStatus(s, 1, total, status);
+            }
+          } finally {
+            this.applying = false;
+          }
+          this.pickerOpen = false;
+          this.pickerSelected.clear();
+          this.pickerAnchor = null;
+          this.view = 'overview';
+          this.render();
+          break;
+        }
       }
     });
 

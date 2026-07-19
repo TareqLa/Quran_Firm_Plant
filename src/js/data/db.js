@@ -165,6 +165,36 @@ class QuranDB {
     });
   }
 
+  // Fetch several surahs in a single cursor pass. Calling getSurahText in a
+  // loop rescans all ~6200 records per surah, which costs seconds once more
+  // than a handful of surahs are requested.
+  // Returns Map<surahNumber, sorted ayah records>.
+  async getSurahTexts(surahNumbers) {
+    await this.initPromise;
+    const wanted = new Set(surahNumbers);
+    const result = new Map();
+    wanted.forEach(n => result.set(n, []));
+    if (wanted.size === 0) return result;
+
+    return new Promise((resolve) => {
+      const transaction = this.db.transaction(['text'], 'readonly');
+      const store = transaction.objectStore('text');
+      const request = store.openCursor();
+      request.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const val = cursor.value;
+          if (wanted.has(val.surah)) result.get(val.surah).push(val);
+          cursor.continue();
+        } else {
+          result.forEach(ayahs => ayahs.sort((a, b) => a.ayah - b.ayah));
+          resolve(result);
+        }
+      };
+      request.onerror = () => resolve(result);
+    });
+  }
+
   // --- Word-by-Word Translation Operations ---
   async getWordTranslations(pageNumber) {
     await this.initPromise;
