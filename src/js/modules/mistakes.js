@@ -753,8 +753,10 @@ export class MistakesModule {
       try {
         if (!quranASR.modelReady) {
           if (box) box.innerText = 'Loading recitation model (first time only)...';
-          await quranASR.ensureLoaded((pct) => {
-            if (box) box.innerText = `Downloading Tarteel Whisper model... ${pct}%`;
+          await quranASR.ensureLoaded((pct, phase) => {
+            if (box) box.innerText = phase === 'warming'
+              ? 'Preparing the on-device recitation model...'
+              : `Loading Tarteel Whisper model... ${pct}%`;
           });
         }
         this.isRecording = true;

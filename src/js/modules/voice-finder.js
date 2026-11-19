@@ -11,13 +11,28 @@ const HISTORY_KEY = 'voice-search-history';
 const FAVORITES_KEY = 'voice-favorites';
 const MAX_HISTORY = 20;
 
+// Joins SpeechRecognition result segments. Android Chrome's continuous mode re-sends
+// everything recognized so far in each new segment ("بسم", "بسم الله", ...), which plain
+// concatenation turns into repeated words.
+function mergeSegments(segments) {
+  let merged = '';
+  for (const raw of segments) {
+    const seg = (raw || '').trim();
+    if (!seg) continue;
+    merged = (!merged || seg.startsWith(merged)) ? seg : `${merged} ${seg}`;
+  }
+  return merged;
+}
+
 export class VoiceFinderModule {
   constructor(contentContainerId) {
     this.container = document.getElementById(contentContainerId);
     this.recognition = null;
     this.isListening = false;
     this.isTranscribing = false;
-    this.transcriptionText = '';
+    this.whisperStarting = false;
+    this.transcriptionText = ''; // settled (final) text
+    this.interimText = ''; // still-changing tail from the browser engine
     this.allTranscripts = []; // Store all alternative transcripts for better matching
     this.activeTab = 'none'; // 'none' | 'history' | 'favorites'
 
@@ -113,34 +128,41 @@ export class VoiceFinderModule {
     this.recognition.onstart = () => {
       this.isListening = true;
       this.transcriptionText = '';
+      this.interimText = '';
       this.allTranscripts = [];
       this.updateMicUI();
     };
 
     this.recognition.onresult = (e) => {
-      let finalText = '';
-      let interim = '';
+      const finals = [];
+      const pending = [];
       this.allTranscripts = [];
 
       for (let i = 0; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
+        const result = e.results[i];
+        if (result.isFinal) {
           // Collect all alternatives from the final result
-          for (let a = 0; a < e.results[i].length; a++) {
-            this.allTranscripts.push(e.results[i][a].transcript);
+          for (let a = 0; a < result.length; a++) {
+            this.allTranscripts.push(result[a].transcript);
           }
-          finalText += e.results[i][0].transcript;
+          finals.push(result[0].transcript);
         } else {
-          interim += e.results[i][0].transcript;
+          pending.push(result[0].transcript);
         }
       }
 
-      this.transcriptionText = finalText;
+      this.transcriptionText = mergeSegments(finals);
+      let interim = mergeSegments(pending);
+      // Android also repeats the settled text at the start of the pending segment
+      if (this.transcriptionText && interim.startsWith(this.transcriptionText)) {
+        interim = interim.slice(this.transcriptionText.length).trim();
+      }
+      this.interimText = interim;
 
-      const box = document.getElementById('voice-transcription-output');
-      if (box) {
-        box.classList.remove('placeholder');
-        box.dir = 'rtl';
-        box.innerText = this.transcriptionText || interim || 'Listening...';
+      // Show every word as soon as it is heard: settled words plus the still-changing
+      // tail (previously the tail disappeared as soon as one segment was final).
+      if (this.transcriptionText || this.interimText) {
+        this.showTranscript(this.transcriptionText, this.interimText);
       }
     };
 
@@ -172,13 +194,47 @@ export class VoiceFinderModule {
     this.recognition.onend = () => {
       this.isListening = false;
       this.updateMicUI();
-      if (this.transcriptionText) {
-        this.performMatch(this.transcriptionText);
+      // A tail that never became final is still what the user said
+      const said = [this.transcriptionText, this.interimText].filter(Boolean).join(' ');
+      this.interimText = '';
+      if (said) {
+        this.transcriptionText = said;
+        this.showTranscript(said);
+        this.performMatch(said);
       } else if (this.allTranscripts.length > 0) {
         // Fallback to any alternative
         this.performMatch(this.allTranscripts[0]);
       }
     };
+  }
+
+  // Settled words in normal text, the still-changing tail dimmed after them.
+  showTranscript(settled, pending = '') {
+    const box = document.getElementById('voice-transcription-output');
+    if (!box) return;
+    box.classList.remove('placeholder');
+    box.dir = 'rtl';
+    box.replaceChildren();
+    if (settled) box.append(settled);
+    if (pending) {
+      const tail = document.createElement('span');
+      tail.className = 'transcription-pending';
+      tail.textContent = settled ? ` ${pending}` : pending;
+      box.append(tail);
+    }
+  }
+
+  showPlaceholder(message) {
+    const box = document.getElementById('voice-transcription-output');
+    if (!box) return;
+    box.classList.add('placeholder');
+    box.dir = 'ltr';
+    box.innerText = message;
+  }
+
+  setStatus(message) {
+    const statusEl = document.getElementById('voice-status-text');
+    if (statusEl) statusEl.innerText = message;
   }
 
   toggleListening() {
@@ -204,14 +260,10 @@ export class VoiceFinderModule {
       try {
         // Reset state before starting
         this.transcriptionText = '';
+        this.interimText = '';
         this.allTranscripts = [];
-        const box = document.getElementById('voice-transcription-output');
-        if (box) {
-          box.classList.add('placeholder');
-          box.dir = 'ltr';
-          box.innerText = 'Listening...';
-        }
-        
+        this.showPlaceholder('Listening...');
+
         this.isListening = true;
         this.updateMicUI();
         this.recognition.start();
@@ -224,64 +276,76 @@ export class VoiceFinderModule {
   }
 
   // --- Whisper (on-device Tarteel model) flow ---
-  async toggleWhisper() {
-    if (this.isTranscribing) return; // busy transcribing the previous take
+  whisperProgress = (pct, phase) => {
+    if (this.isListening || this.isTranscribing) return;
+    this.setStatus(phase === 'warming'
+      ? 'Preparing the on-device recitation model...'
+      : `Loading Tarteel Whisper model (cached after the first time)... ${pct}%`);
+  };
 
-    const statusEl = document.getElementById('voice-status-text');
-    const box = document.getElementById('voice-transcription-output');
+  // Start loading the model as soon as Whisper is the chosen engine, so the first tap
+  // on the mic doesn't have to wait for it.
+  preloadWhisper() {
+    if (!this.useWhisper || quranASR.modelReady) return;
+    quranASR.ensureLoaded(this.whisperProgress)
+      .then(() => {
+        if (!this.isListening && !this.isTranscribing && !this.whisperStarting) this.updateMicUI();
+      })
+      .catch((e) => console.warn('On-device model preload failed:', e));
+  }
+
+  async toggleWhisper() {
+    // Busy loading/starting the mic or transcribing the previous take
+    if (this.isTranscribing || this.whisperStarting) return;
 
     if (!quranASR.isRecording) {
+      this.whisperStarting = true;
       try {
         if (!quranASR.modelReady) {
-          if (statusEl) statusEl.innerText = 'Loading recitation model (first time only, cached afterwards)...';
-          await quranASR.ensureLoaded((pct) => {
-            if (statusEl) statusEl.innerText = `Downloading Tarteel Whisper model... ${pct}%`;
-          });
+          this.setStatus('Loading recitation model (first time only, cached afterwards)...');
+          await quranASR.ensureLoaded(this.whisperProgress);
         }
         this.isListening = true;
         this.transcriptionText = '';
+        this.interimText = '';
         this.allTranscripts = [];
-        if (box) {
-          box.classList.add('placeholder');
-          box.dir = 'ltr';
-          box.innerText = 'Recording... recite now, then tap the mic to stop.';
-        }
+        this.showPlaceholder('Recording... recite now, then tap the mic to stop.');
         this.updateMicUI();
 
-        await quranASR.startRecording((text) => {
+        await quranASR.startRecording((text, { settled = '', pending = text } = {}) => {
           if (!text || !this.isListening) return;
+          // Finished phrases are final; the phrase still being recited may change (dimmed)
           this.transcriptionText = text;
-          if (box) {
-            box.classList.remove('placeholder');
-            box.dir = 'rtl';
-            box.innerText = text;
-          }
+          this.showTranscript(settled, pending);
         });
       } catch (e) {
         console.error('On-device ASR failed:', e);
+        this.isListening = false;
+        this.updateMicUI();
         if (e.name === 'NotAllowedError' || e.name === 'NotFoundError') {
-          if (statusEl) statusEl.innerText = 'Microphone unavailable. Please allow microphone access.';
+          this.setStatus('Microphone unavailable. Please allow microphone access.');
           return;
         }
-        // Model/worker failure -> fall back to browser SpeechRecognition permanently
+        // Model/worker failure -> fall back to browser SpeechRecognition
         this.useWhisper = false;
+        const toggle = document.getElementById('vf-engine-toggle');
+        if (toggle) toggle.innerText = 'Browser (live)';
         if (this.recognition) {
-          if (statusEl) statusEl.innerText = 'On-device model unavailable, using browser recognition...';
+          this.setStatus('On-device model unavailable, using browser recognition...');
           this.toggleListening();
         } else {
-          if (statusEl) statusEl.innerText = 'Speech recognition is not available in this browser. Use the text search below.';
+          this.setStatus('Speech recognition is not available in this browser. Use the text search below.');
         }
+      } finally {
+        this.whisperStarting = false;
       }
     } else {
       // Stop recording and transcribe locally
       this.isListening = false;
       this.isTranscribing = true;
       this.updateMicUI();
-      if (box) {
-        box.classList.add('placeholder');
-        box.dir = 'ltr';
-        box.innerText = 'Transcribing your recitation on-device...';
-      }
+      // Keep the live text on screen while the final pass runs
+      if (!this.transcriptionText) this.showPlaceholder('Transcribing your recitation on-device...');
 
       try {
         const text = await quranASR.stopAndTranscribe();
@@ -289,24 +353,21 @@ export class VoiceFinderModule {
         this.updateMicUI();
 
         if (!text) {
-          if (statusEl) statusEl.innerText = 'No speech detected. Please try again.';
-          if (box) box.innerText = 'Spoken recitation will appear here...';
+          this.transcriptionText = '';
+          this.setStatus('No speech detected. Please try again.');
+          this.showPlaceholder('Spoken recitation will appear here...');
           return;
         }
 
         this.transcriptionText = text;
-        if (box) {
-          box.classList.remove('placeholder');
-          box.dir = 'rtl';
-          box.innerText = text;
-        }
+        this.showTranscript(text);
         this.performMatch(text);
       } catch (e) {
         console.error('Transcription failed:', e);
         this.isTranscribing = false;
         this.updateMicUI();
-        if (statusEl) statusEl.innerText = 'Transcription failed. Tap the mic to try again.';
-        if (box) box.innerText = 'Spoken recitation will appear here...';
+        this.setStatus('Transcription failed. Tap the mic to try again.');
+        this.showPlaceholder('Spoken recitation will appear here...');
       }
     }
   }
@@ -318,10 +379,12 @@ export class VoiceFinderModule {
     if (container && statusText) {
       if (this.isListening) {
         container.classList.add('listening');
-        statusText.innerText = 'Reciting... Speak clearly now. Tap mic again to stop.';
+        statusText.innerText = this.useWhisper
+          ? 'Reciting... the text updates every few seconds. Tap the mic again to stop.'
+          : 'Reciting... Speak clearly now. Tap mic again to stop.';
       } else if (this.isTranscribing) {
         container.classList.remove('listening');
-        statusText.innerText = 'Transcribing your recitation on-device...';
+        statusText.innerText = 'Finishing the on-device transcription...';
       } else {
         container.classList.remove('listening');
         statusText.innerText = 'Tap the microphone and recite a verse';
@@ -400,6 +463,7 @@ export class VoiceFinderModule {
     `;
 
     this.setupEvents();
+    this.preloadWhisper();
   }
 
   renderActivePanel() {
@@ -512,11 +576,13 @@ export class VoiceFinderModule {
     document.getElementById('voice-mic-trigger')?.addEventListener('click', () => this.toggleListening());
 
     document.getElementById('vf-engine-toggle')?.addEventListener('click', () => {
-      if (this.isListening || this.isTranscribing) return; // don't swap mid-recording
+      if (this.isListening || this.isTranscribing || this.whisperStarting) return; // don't swap mid-recording
       this.useWhisper = !this.useWhisper;
       setAsrEngine(this.useWhisper ? 'whisper' : 'browser');
       const btn = document.getElementById('vf-engine-toggle');
       if (btn) btn.innerText = this.useWhisper ? 'On-device Whisper' : 'Browser (live)';
+      this.updateMicUI();
+      this.preloadWhisper();
     });
 
     // Manual search button

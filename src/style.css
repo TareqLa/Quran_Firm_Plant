@@ -2373,6 +2373,11 @@ button {
   direction: ltr;
 }
 
+/* Words the recognizer may still revise */
+.transcription-pending {
+  color: var(--text-muted);
+}
+
 /* Voice Finder - History & Favorites Tabs */
 .vf-tabs-bar {
   width: 100%;

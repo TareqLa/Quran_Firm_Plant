@@ -7,8 +7,10 @@ export function normalizeArabic(text) {
   // 1. Remove Tashkeel (diacritics: fatha, damma, kasra, sukun, shaddah, tanween, maddah, superscript alef)
   let normalized = text.replace(/[\u064B-\u065F\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED]/g, '');
 
-  // 2. Remove Quran-specific symbols (verse markers, sajda, etc.)
-  normalized = normalized.replace(/[\u06D7\u06D8\u06D9\u06DA\u06DB\u06DC]/g, '');
+  // 2. Remove Quran-specific symbols (end of ayah \u06DD, rub el hizb \u06DE, sajdah \u06E9) and the
+  //    small waw/yeh (\u06E5 \u06E6) the Uthmani script adds for prolonged vowels, which plain
+  //    spelling (and speech recognition output) never writes.
+  normalized = normalized.replace(/[\u06DD\u06DE\u06E9\u06E5\u06E6]/g, '');
 
   // 3. Normalize Alefs (أ, إ, آ, ٱ -> ا)
   normalized = normalized.replace(/[أإآٱ]/g, 'ا');
@@ -69,32 +71,22 @@ function similarityRatio(a, b) {
   return 1 - dist / maxLen;
 }
 
-// Check if query is a fuzzy substring of the text.
-// Windows are built on word boundaries (speech fragments start/end at words),
-// which keeps this thousands of times cheaper than per-character sliding.
-function fuzzySubstringScore(query, text) {
-  if (!query || !text) return 0;
-
-  // Exact substring match
-  if (text.includes(query)) return 1.0;
-
-  // If query is longer than text, compare the other way
-  if (query.length > text.length) {
-    return similarityRatio(query, text);
-  }
-
-  const words = text.split(' ');
-  const qLen = query.length;
+// Best similarity between `needle` and any run of whole words in `haystack` of about
+// the same length. Windows are built on word boundaries (speech fragments start/end at
+// words), which keeps this thousands of times cheaper than per-character sliding.
+function bestWindowScore(needle, haystack) {
+  const words = haystack.split(' ');
+  const len = needle.length;
   let bestScore = 0;
 
   for (let i = 0; i < words.length; i++) {
     let chunk = '';
     for (let j = i; j < words.length; j++) {
       chunk = chunk ? chunk + ' ' + words[j] : words[j];
-      if (chunk.length > qLen + 10) break;
-      // Only score windows whose length is comparable to the query
-      if (chunk.length >= qLen - 10) {
-        const score = similarityRatio(query, chunk);
+      if (chunk.length > len + 10) break;
+      // Only score windows whose length is comparable to the needle
+      if (chunk.length >= len - 10) {
+        const score = similarityRatio(needle, chunk);
         if (score > bestScore) bestScore = score;
       }
     }
@@ -102,6 +94,41 @@ function fuzzySubstringScore(query, text) {
   }
 
   return bestScore;
+}
+
+// True if `inner` occurs in `outer` as whole words (so "الم" isn't found inside "العالمين").
+function containsWords(outer, inner) {
+  return ` ${outer} `.includes(` ${inner} `);
+}
+
+// Check if query is a fuzzy substring of the text.
+function fuzzySubstringScore(query, text) {
+  if (!query || !text) return 0;
+
+  // Exact whole-word match
+  if (containsWords(text, query)) return 1.0;
+
+  if (query.length <= text.length) return bestWindowScore(query, text);
+
+  // The user recited more than this verse (e.g. it and the next one): look for the
+  // verse inside the recitation, discounted by how little of the recitation it covers
+  // so a short phrase that merely appears in it doesn't rank as a match. A query only a
+  // little longer (plain spelling adds alefs) is still best compared as a whole.
+  const coverage = text.length / query.length;
+  return Math.max(similarityRatio(query, text), bestWindowScore(text, query) * (0.5 + 0.5 * coverage));
+}
+
+// How closely the verse length matches the recitation (1 = same length). Breaks ties
+// between near-equal scores, e.g. 1:2 itself over longer verses ending in the same words.
+function lengthFit(a, b) {
+  return Math.min(a.length, b.length) / Math.max(a.length, b.length);
+}
+
+// Screening key that ignores alefs: the Uthmani text leaves out many alefs that plain
+// spelling (and both speech engines) write out, e.g. ٱلۡكِتَٰبُ vs الكتاب and
+// ٱلۡعَٰلَمِينَ vs العالمين, so exact-word screening would miss those verses.
+function looseKey(word) {
+  return word.replace(/ا/g, '');
 }
 
 // Find closest matching verse based on transcription
@@ -146,32 +173,36 @@ export async function findClosestVerse(transcription, dbInstance, targetSurahNum
   // Two-pass scoring: a cheap screening pass over every ayah, then
   // expensive fuzzy scoring only on the most promising candidates.
   const queryWords = normalizedQuery.split(' ').filter(w => w.length > 1);
-  const querySet = new Set(queryWords);
+  const querySet = new Set(queryWords.map(looseKey).filter(Boolean));
 
   // --- Pass 1 (cheap, all 6236 ayahs) ---
   const roughCandidates = [];
   searchPool.forEach(ayah => {
     const normalizedText = normalizeArabic(ayah.text);
+    if (!normalizedText) return;
+    const fit = lengthFit(normalizedQuery, normalizedText);
 
-    // Strategy 1: Exact substring match (highest confidence)
-    if (normalizedText.includes(normalizedQuery)) {
-      candidates.push({ ayah, score: 1.0 });
+    // Strategy 1: Exact whole-word substring match (highest confidence)
+    if (containsWords(normalizedText, normalizedQuery)) {
+      candidates.push({ ayah, score: 1.0, fit });
       return;
     }
 
-    // Strategy 2: Query contains the full verse text (user said extra words around it)
-    if (normalizedQuery.includes(normalizedText)) {
-      candidates.push({ ayah, score: 0.95 });
+    // Strategy 2: Query contains the full verse text (user said extra words around it),
+    // scored by how much of the recitation the verse accounts for; a tiny verse such as
+    // "الم" inside a long recitation isn't evidence of anything.
+    if (fit >= 0.15 && containsWords(normalizedQuery, normalizedText)) {
+      candidates.push({ ayah, score: Math.min(0.95, 0.5 + 0.5 * fit), fit });
       return;
     }
 
-    // Cheap screen: count exact shared words
+    // Cheap screen: count shared words (alef-insensitive)
     let hits = 0;
     for (const tw of normalizedText.split(' ')) {
-      if (querySet.has(tw)) hits++;
+      if (querySet.has(looseKey(tw))) hits++;
     }
     if (hits > 0) {
-      roughCandidates.push({ ayah, normalizedText, ratio: hits / Math.max(queryWords.length, 1) });
+      roughCandidates.push({ ayah, normalizedText, fit, ratio: hits / Math.max(queryWords.length, 1) });
     }
   });
 
@@ -182,7 +213,7 @@ export async function findClosestVerse(transcription, dbInstance, targetSurahNum
     // Catches partial speech fragments and minor transcription errors
     const subScore = fuzzySubstringScore(normalizedQuery, cand.normalizedText);
     if (subScore > 0.55) {
-      candidates.push({ ayah: cand.ayah, score: subScore });
+      candidates.push({ ayah: cand.ayah, score: subScore, fit: cand.fit });
       continue;
     }
 
@@ -198,15 +229,20 @@ export async function findClosestVerse(transcription, dbInstance, targetSurahNum
       }
       const wordOverlap = matchedWords / queryWords.length;
       if (wordOverlap > 0.5) {
-        candidates.push({ ayah: cand.ayah, score: wordOverlap * 0.85 });
+        candidates.push({ ayah: cand.ayah, score: wordOverlap * 0.85, fit: cand.fit });
       }
     }
   }
 
-  // Sort by score descending, deduplicate by ayah id
+  // Sort by score descending (scores within ~2 points count as a tie, broken by length
+  // fit, then mushaf order), deduplicate by ayah id
   const seen = new Set();
   const unique = [];
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort((a, b) =>
+    (Math.round(b.score * 50) - Math.round(a.score * 50))
+    || (b.fit - a.fit)
+    || (b.score - a.score)
+    || ((a.ayah.globalId ?? 0) - (b.ayah.globalId ?? 0)));
   for (const c of candidates) {
     if (!seen.has(c.ayah.id)) {
       seen.add(c.ayah.id);
