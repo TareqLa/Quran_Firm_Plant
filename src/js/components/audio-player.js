@@ -28,8 +28,9 @@ export class AudioPlayer {
     });
   }
 
-  // Play audio for a verse using its absolute/global verse number (1 - 6236)
-  playGlobalVerse(globalId, ayahKey) {
+  // Play audio for a verse using its absolute/global verse number (1 - 6236).
+  // `onError`, if given, handles a failed start instead of the alert() (e.g. to show it inline).
+  playGlobalVerse(globalId, ayahKey, { onError } = {}) {
     if (this.isPlaying && this.currentGlobalId === globalId) {
       this.pause();
       return;
@@ -37,12 +38,15 @@ export class AudioPlayer {
 
     this.currentAyahKey = ayahKey;
     this.currentGlobalId = globalId;
-    
+
     // Al-Quran Cloud audio stream (Mishary Rashid Alafasy)
     this.audio.src = `https://cdn.islamic.network/quran/audio/128/ar.alafasy/${globalId}.mp3`;
     this.audio.play().catch(e => {
+      // A newer play() or pause() interrupted this one; that isn't a failure
+      if (e?.name === 'AbortError') return;
       console.error('Audio playback failed:', e);
-      alert('Could not stream audio. Please check your internet connection.');
+      if (onError) onError(e);
+      else alert('Could not stream audio. Please check your internet connection.');
     });
   }
 

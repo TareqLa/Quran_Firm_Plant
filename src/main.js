@@ -4,6 +4,7 @@
 import './style.css';
 import { db } from './js/data/db.js';
 import { quranLoader } from './js/data/loader.js';
+import { pageOfAyah } from './js/data/ayah-location.js';
 import { audioPlayer } from './js/components/audio-player.js';
 import { Navigation } from './js/components/navigation.js';
 import { SurahSelector, SURAH_LIST } from './js/components/surah-selector.js';
@@ -155,8 +156,13 @@ class AppController {
 
     // Clear main content container
     const contentAreaId = 'app-content';
-    
-    // Toggle selector highlights depending on active module
+
+    // Voice Finder always searches the whole Quran, so the Surah/Page picker would only
+    // mislead there: hide it on that page.
+    const selectorHost = document.getElementById('global-selector-container');
+    if (selectorHost) selectorHost.hidden = moduleName === 'voice-finder';
+
+    // Toggle selector highlights depending on active module (none while it is hidden)
     if (moduleName === 'page-map') {
       this.surahSelector.setMode('page');
       // Highlight the page selector button
@@ -171,7 +177,7 @@ class AppController {
         document.getElementById('surah-trigger-btn').style.borderColor = 'var(--accent-gold)';
         document.getElementById('page-trigger-btn').style.borderColor = '';
       }
-    } else {
+    } else if (moduleName !== 'voice-finder') {
       this.surahSelector.setMode('surah');
       // Highlight the Surah selector button
       document.getElementById('surah-trigger-btn').style.borderColor = 'var(--accent-gold)';
@@ -243,27 +249,11 @@ class AppController {
   async navigateToPageMap(surahNum, ayahNum) {
     const verseKey = `${surahNum}:${ayahNum}`;
 
-    // Get the page range for this surah
+    // The static ayah index knows the page for the current mushaf edition, so no page
+    // layouts have to be downloaded to find it. Unknown ayah: the surah's first page.
     const surah = SURAH_LIST.find(s => s.id === surahNum);
-    if (!surah) return;
-
-    const [startPage, endPage] = surah.pages;
-    let targetPage = startPage; // fallback to first page
-
-    // Scan each page in the surah's range to find which one contains this verse
-    for (let p = startPage; p <= endPage; p++) {
-      const pageData = await quranLoader.loadPage(p, localStorage.getItem('mushaf-edition') || 'v2');
-      if (!pageData) continue;
-
-      const found = pageData.lines.some(line =>
-        line.words.some(w => w.verse_key === verseKey)
-      );
-
-      if (found) {
-        targetPage = p;
-        break;
-      }
-    }
+    const targetPage = pageOfAyah(surahNum, ayahNum) ?? surah?.pages[0];
+    if (!targetPage) return;
 
     // Stash the target so handleRouteSwitch('page-map') picks it up instead of
     // restoring whatever page was last opened.

@@ -1,0 +1,135 @@
+#!/usr/bin/env node
+// Builds src/js/data/ayah-index.js: the mushaf page and juz of every ayah, so the app can
+// show "Page 42 · Juz 3" on a verse and open the Page Map without scanning page layouts.
+//
+// Run it once (needs internet, about 720 requests), then commit the generated file:
+//   node scripts/build-ayah-index.mjs
+//
+// Sources:
+//   - Pages: the QCF page layouts the Page Map loads by default ("v2" edition,
+//     raw.githubusercontent.com/MohamadHajjRabee/quran-qcf4). An ayah's page is the page
+//     its first word is on.
+//   - Juz, and the pages of the Page Map's "v1" edition: Quran.com API v4. Its older
+//     layout puts a few dozen ayahs on a neighbouring page; those are stored as exceptions.
+
+import { writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const VERSES_API = 'https://api.quran.com/api/v4/verses/by_chapter';
+const QCF_PAGES = 'https://raw.githubusercontent.com/MohamadHajjRabee/quran-qcf4/main/pages';
+const OUT_FILE = fileURLToPath(new URL('../src/js/data/ayah-index.js', import.meta.url));
+const TOTAL_AYAHS = 6236;
+const TOTAL_PAGES = 604;
+const TOTAL_JUZ = 30;
+
+async function getJson(url, tries = 4) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      if (attempt >= tries) throw new Error(`${url}: ${e.message}`);
+      await new Promise(resolve => setTimeout(resolve, 600 * attempt));
+    }
+  }
+}
+
+// Calls task(1..count) with at most `limit` requests in flight, results in order
+async function mapLimit(count, limit, task) {
+  const results = new Array(count);
+  let next = 0;
+  await Promise.all(Array.from({ length: limit }, async () => {
+    while (next < count) {
+      const index = next++;
+      results[index] = await task(index + 1);
+    }
+  }));
+  return results;
+}
+
+function fail(message) {
+  console.error(`build-ayah-index: ${message}`);
+  process.exit(1);
+}
+
+// Pages must never go backwards in mushaf order, and every page must be used
+function checkPages(name, pagesBySurah) {
+  let last = 0;
+  const seen = new Set();
+  pagesBySurah.forEach((pages, i) => pages.forEach((page, j) => {
+    if (!(page >= last && page <= TOTAL_PAGES)) fail(`${name}: page out of order at ${i + 1}:${j + 1}`);
+    last = page;
+    seen.add(page);
+  }));
+  if (seen.size !== TOTAL_PAGES) fail(`${name}: expected ${TOTAL_PAGES} pages, got ${seen.size}`);
+}
+
+// --- 1. Quran.com: every ayah's juz and v1 page, one request per surah ---
+console.log('Fetching juz and page numbers from the Quran.com API...');
+const chapters = await mapLimit(114, 6, async (surah) => {
+  const verses = [];
+  for (let page = 1; page;) {
+    const data = await getJson(`${VERSES_API}/${surah}?per_page=300&page=${page}`);
+    verses.push(...data.verses);
+    page = data.pagination?.next_page || null;
+  }
+  return verses;
+});
+
+let count = 0;
+let lastJuz = 0;
+const juzStarts = [];
+chapters.forEach((verses, i) => verses.forEach((v, j) => {
+  if (v.verse_key !== `${i + 1}:${j + 1}`) fail(`expected ${i + 1}:${j + 1}, got ${v.verse_key}`);
+  if (v.juz_number !== lastJuz && v.juz_number !== lastJuz + 1) fail(`juz out of order at ${v.verse_key}`);
+  if (v.juz_number > lastJuz) juzStarts.push([i + 1, j + 1]);
+  lastJuz = v.juz_number;
+  count++;
+}));
+if (count !== TOTAL_AYAHS) fail(`expected ${TOTAL_AYAHS} ayahs, got ${count}`);
+if (juzStarts.length !== TOTAL_JUZ) fail(`expected ${TOTAL_JUZ} juz, got ${juzStarts.length}`);
+const v1Pages = chapters.map(verses => verses.map(v => v.page_number));
+checkPages('Quran.com', v1Pages);
+
+// --- 2. QCF layouts: the page each ayah starts on in the Page Map's default edition ---
+console.log('Reading all 604 QCF page layouts...');
+const layouts = await mapLimit(TOTAL_PAGES, 8, page =>
+  getJson(`${QCF_PAGES}/${String(page).padStart(3, '0')}.json`));
+const ayahPages = chapters.map(verses => new Array(verses.length).fill(null));
+layouts.forEach((layout, i) => layout.lines.forEach(line => line.words.forEach(word => {
+  if (!word.verse_key || (word.type !== 'word' && word.type !== 'end')) return;
+  const [surah, ayah] = word.verse_key.split(':').map(Number);
+  const pages = ayahPages[surah - 1];
+  if (!pages || ayah < 1 || ayah > pages.length) fail(`page ${i + 1} has unknown ayah ${word.verse_key}`);
+  if (pages[ayah - 1] == null) pages[ayah - 1] = i + 1; // layouts are read in page order
+})));
+ayahPages.forEach((pages, i) => pages.forEach((page, j) => {
+  if (page == null) fail(`no QCF page shows ${i + 1}:${j + 1}`);
+}));
+checkPages('QCF', ayahPages);
+
+// --- 3. Where the v1 edition puts an ayah on another page ---
+const v1Exceptions = [];
+v1Pages.forEach((pages, i) => pages.forEach((page, j) => {
+  if (page !== ayahPages[i][j]) v1Exceptions.push(`'${i + 1}:${j + 1}':${page}`);
+}));
+
+// --- 4. Write the module ---
+const source = `// Generated by scripts/build-ayah-index.mjs. Do not edit by hand.
+// Madani mushaf, 604 pages and 30 juz. Pages come from the QCF layouts the Page Map loads by
+// default (edition "v2"); juz and the v1 edition's pages come from the Quran.com API v4.
+
+// AYAH_PAGES[surah - 1][ayah - 1] is the page the ayah starts on (edition "v2").
+export const AYAH_PAGES = [
+${ayahPages.map(pages => `[${pages.join(',')}]`).join(',\n')}
+];
+
+// The ${v1Exceptions.length} ayahs the Page Map's "v1" edition (Quran.com layout) puts on another page.
+export const V1_PAGES = {${v1Exceptions.join(',')}};
+
+// JUZ_STARTS[juz - 1] is the [surah, ayah] the juz starts with.
+export const JUZ_STARTS = [${juzStarts.map(([s, a]) => `[${s},${a}]`).join(',')}];
+`;
+await writeFile(OUT_FILE, source);
+console.log(`Wrote ${OUT_FILE} (${(Buffer.byteLength(source) / 1024).toFixed(1)} KB, ${v1Exceptions.length} v1 exceptions).`);
