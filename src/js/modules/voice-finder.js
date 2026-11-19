@@ -4,7 +4,7 @@
 // 'voice-favorites' storage key from when the tab was called Favorites.
 
 import { db } from '../data/db.js';
-import { findClosestVerse, normalizeArabic, levenshteinDistance } from '../utils/normalize.js';
+import { findClosestVerse, prepareVerseSearch, recitationText, normalizeArabic, levenshteinDistance } from '../utils/normalize.js';
 import { audioPlayer } from '../components/audio-player.js';
 import { quranASR, QuranASR } from '../utils/asr.js';
 import { getAsrEngine, setAsrEngine } from '../utils/asr-engine-pref.js';
@@ -162,8 +162,10 @@ function similarWord(a, b) {
 
 // How a result matched the query, in the words of the result card. A verse that lies
 // whole inside a longer recitation is only near: the other words may be another verse's.
+// The isti'adha or basmala before a recitation (and "صدق الله العظيم" after it) isn't
+// part of it, as in the search.
 function matchKind(query, ayah, score) {
-  const q = looseWords(query);
+  const q = looseWords(recitationText(query));
   const verse = looseWords(ayah.text);
   if (q.length && q.join(' ') === verse.join(' ')) return 'exact';
   if (findRun(verse, q) >= 0) return 'phrase';
@@ -172,12 +174,12 @@ function matchKind(query, ayah, score) {
 
 // [first, last] indexes of the verse words the query covers, or null
 function recitedRange(tokens, query) {
-  const q = looseWords(query);
-  const at = []; // token indexes of real words (skips marks such as ۞)
+  const q = looseWords(recitationText(query));
+  const at = []; // token index of each word (marks such as ۞ have none)
   const words = [];
   tokens.forEach((token, i) => {
-    const key = looseWords(token).join('');
-    if (key) {
+    // One token can hold two words: the vocative يَٰقَوۡمِ is يا قوم
+    for (const key of looseWords(token)) {
       at.push(i);
       words.push(key);
     }
@@ -588,6 +590,17 @@ export class VoiceFinderModule {
       });
   }
 
+  // Build the verse search index (once per session) while the user gets ready to recite
+  // or type, so the first search doesn't wait for it. It is built in slices, and only
+  // once the page is idle, so opening the page stays smooth.
+  prepareSearch() {
+    const start = () => {
+      if (!this.destroyed) prepareVerseSearch(db).catch(e => console.warn('Could not prepare the verse search:', e));
+    };
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(start, { timeout: 1500 });
+    else setTimeout(start, 300);
+  }
+
   async startWhisper() {
     if (this.whisperStarting || this.isTranscribing || quranASR.isRecording) return;
     const session = ++this.speechSession;
@@ -721,6 +734,7 @@ export class VoiceFinderModule {
     this.bindAudio();
     this.renderPanel();
     this.preloadWhisper();
+    this.prepareSearch();
     // Clamping and the "Show full verse" link depend on the Arabic font's metrics
     document.fonts?.ready.then(() => { if (!this.destroyed) this.fitHeroVerse(); });
   }
