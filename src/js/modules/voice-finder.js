@@ -35,6 +35,12 @@ export class VoiceFinderModule {
     this.interimText = ''; // still-changing tail from the browser engine
     this.allTranscripts = []; // Store all alternative transcripts for better matching
     this.activeTab = 'none'; // 'none' | 'history' | 'favorites'
+    // An error or "no speech" message. The session is already over when it is set,
+    // so updateMicUI() shows it instead of the idle prompt until the next mic tap.
+    this.notice = '';
+    this.destroyed = false; // set by destroy() when the app leaves this page
+    this.matchToken = 0; // only the latest search may render its results
+    this.openingPageMap = false;
 
     // Two selectable engines while we test/tune both (see asr-engine-pref.js):
     // browser SpeechRecognition (fast, cloud-based, default) or the on-device
@@ -44,19 +50,58 @@ export class VoiceFinderModule {
     this.initSpeechRecognition();
   }
 
+  // The header surah selector doesn't scope this module; ignore changes.
+  loadSurah() {}
+
+  // Called by the app before it switches to another module: release the microphone
+  // and stop audio, so nothing keeps recording after the user has left the page.
+  destroy() {
+    this.destroyed = true;
+    if (this.recognition) {
+      const recognition = this.recognition;
+      // Detach first: abort() still fires error/end, which would touch the next page
+      recognition.onstart = recognition.onresult = recognition.onerror = recognition.onend = null;
+      try { recognition.abort(); } catch { /* never started */ }
+      this.recognition = null;
+    }
+    // The on-device recorder is a shared singleton, so a recording left running here
+    // would also make the next mic tap (on any page) stop it instead of starting one.
+    if (quranASR.isRecording) quranASR.cancelRecording();
+    if (quranASR.onLoadProgress === this.whisperProgress) quranASR.onLoadProgress = null;
+    this.isListening = false;
+    this.isTranscribing = false;
+    audioPlayer.stop();
+  }
+
   // --- LocalStorage helpers ---
   getHistory() {
+    let history;
     try {
-      return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+      history = JSON.parse(localStorage.getItem(HISTORY_KEY));
     } catch { return []; }
+    if (!Array.isArray(history)) return [];
+    // Entries saved before ids existed get one (and keep it), so they can be deleted by id
+    if (history.some(entry => !entry.id)) {
+      history.forEach(entry => { if (!entry.id) entry.id = this.newHistoryId(); });
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    }
+    return history;
+  }
+
+  newHistoryId() {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   saveToHistory(query, topMatch) {
+    const q = query.trim();
+    if (!q) return;
     const history = this.getHistory();
-    // Avoid duplicate consecutive entries for the same query
-    if (history.length > 0 && history[0].query === query) return;
-    history.unshift({
-      query,
+    // A repeated search moves to the top (keeping its id) instead of being added again
+    const existing = history.find(entry => (entry.query || '').trim() === q);
+    const others = history.filter(entry => (entry.query || '').trim() !== q);
+    others.unshift({
+      id: existing ? existing.id : this.newHistoryId(),
+      query: q,
       timestamp: Date.now(),
       topMatch: topMatch ? {
         surah: topMatch.surah,
@@ -67,7 +112,12 @@ export class VoiceFinderModule {
         id: topMatch.id
       } : null
     });
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(others.slice(0, MAX_HISTORY)));
+  }
+
+  deleteHistoryEntry(id) {
+    const history = this.getHistory().filter(entry => entry.id !== id);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   }
 
   clearHistory() {
@@ -167,28 +217,22 @@ export class VoiceFinderModule {
     };
 
     this.recognition.onerror = (e) => {
-      console.error('Speech recognition error:', e.error);
-      
-      // Don't reset on 'no-speech' — just keep listening
-      if (e.error === 'no-speech') {
-        const statusEl = document.getElementById('voice-status-text');
-        if (statusEl) statusEl.innerText = 'No speech detected. Please try again.';
-        return;
-      }
-      
+      console.warn('Speech recognition error:', e.error);
+
+      // Every error ends the session, 'no-speech' included, and the browser fires `end`
+      // right after. Keep the message in state: onend's updateMicUI() shows it until the
+      // next mic tap instead of resetting the line to the idle prompt.
       this.isListening = false;
-      this.updateMicUI();
-      
-      const statusEl = document.getElementById('voice-status-text');
-      if (statusEl) {
-        if (e.error === 'not-allowed') {
-          statusEl.innerText = 'Microphone permission denied. Please allow microphone access.';
-        } else if (e.error === 'network') {
-          statusEl.innerText = 'Network error. Speech recognition requires internet.';
-        } else {
-          statusEl.innerText = `Error: ${e.error}. Tap the mic to try again.`;
-        }
+      if (e.error === 'no-speech') {
+        this.notice = 'No speech detected. Please try again.';
+      } else if (e.error === 'not-allowed') {
+        this.notice = 'Microphone permission denied. Please allow microphone access.';
+      } else if (e.error === 'network') {
+        this.notice = 'Network error. Speech recognition requires internet.';
+      } else {
+        this.notice = `Error: ${e.error}. Tap the mic to try again.`;
       }
+      this.updateMicUI();
     };
 
     this.recognition.onend = () => {
@@ -197,13 +241,14 @@ export class VoiceFinderModule {
       // A tail that never became final is still what the user said
       const said = [this.transcriptionText, this.interimText].filter(Boolean).join(' ');
       this.interimText = '';
+      const alternatives = this.allTranscripts;
       if (said) {
         this.transcriptionText = said;
         this.showTranscript(said);
-        this.performMatch(said);
-      } else if (this.allTranscripts.length > 0) {
+        this.performMatch(said, { alternatives });
+      } else if (alternatives.length > 0) {
         // Fallback to any alternative
-        this.performMatch(this.allTranscripts[0]);
+        this.performMatch(alternatives[0], { alternatives });
       }
     };
   }
@@ -237,7 +282,14 @@ export class VoiceFinderModule {
     if (statusEl) statusEl.innerText = message;
   }
 
+  // A message that must outlast the end of the session (see `notice`).
+  showNotice(message) {
+    this.notice = message;
+    this.updateMicUI();
+  }
+
   toggleListening() {
+    this.notice = ''; // a new tap replaces the last error
     if (this.useWhisper) {
       this.toggleWhisper();
       return;
@@ -305,6 +357,7 @@ export class VoiceFinderModule {
           this.setStatus('Loading recitation model (first time only, cached afterwards)...');
           await quranASR.ensureLoaded(this.whisperProgress);
         }
+        if (this.destroyed) return; // left the page while the model loaded
         this.isListening = true;
         this.transcriptionText = '';
         this.interimText = '';
@@ -318,12 +371,15 @@ export class VoiceFinderModule {
           this.transcriptionText = text;
           this.showTranscript(settled, pending);
         });
+        // Left the page while the browser was still opening the mic
+        if (this.destroyed) quranASR.cancelRecording();
       } catch (e) {
+        if (this.destroyed) return;
         console.error('On-device ASR failed:', e);
         this.isListening = false;
         this.updateMicUI();
         if (e.name === 'NotAllowedError' || e.name === 'NotFoundError') {
-          this.setStatus('Microphone unavailable. Please allow microphone access.');
+          this.showNotice('Microphone unavailable. Please allow microphone access.');
           return;
         }
         // Model/worker failure -> fall back to browser SpeechRecognition
@@ -334,7 +390,7 @@ export class VoiceFinderModule {
           this.setStatus('On-device model unavailable, using browser recognition...');
           this.toggleListening();
         } else {
-          this.setStatus('Speech recognition is not available in this browser. Use the text search below.');
+          this.showNotice('Speech recognition is not available in this browser. Use the text search below.');
         }
       } finally {
         this.whisperStarting = false;
@@ -349,24 +405,25 @@ export class VoiceFinderModule {
 
       try {
         const text = await quranASR.stopAndTranscribe();
+        if (this.destroyed) return; // left the page while transcribing
         this.isTranscribing = false;
-        this.updateMicUI();
 
         if (!text) {
           this.transcriptionText = '';
-          this.setStatus('No speech detected. Please try again.');
+          this.showNotice('No speech detected. Please try again.');
           this.showPlaceholder('Spoken recitation will appear here...');
           return;
         }
 
+        this.updateMicUI();
         this.transcriptionText = text;
         this.showTranscript(text);
         this.performMatch(text);
       } catch (e) {
+        if (this.destroyed) return;
         console.error('Transcription failed:', e);
         this.isTranscribing = false;
-        this.updateMicUI();
-        this.setStatus('Transcription failed. Tap the mic to try again.');
+        this.showNotice('Transcription failed. Tap the mic to try again.');
         this.showPlaceholder('Spoken recitation will appear here...');
       }
     }
@@ -387,7 +444,7 @@ export class VoiceFinderModule {
         statusText.innerText = 'Finishing the on-device transcription...';
       } else {
         container.classList.remove('listening');
-        statusText.innerText = 'Tap the microphone and recite a verse';
+        statusText.innerText = this.notice || 'Tap the microphone and recite a verse';
       }
     }
   }
@@ -416,12 +473,12 @@ export class VoiceFinderModule {
           </button>
         </div>
 
-        <div id="voice-status-text" class="voice-status">Tap the microphone and recite a verse</div>
+        <div id="voice-status-text" class="voice-status" aria-live="polite">Tap the microphone and recite a verse</div>
 
         ${this.recognition && this.whisperSupported ? `
         <div class="vf-engine-switch" style="display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 12px; font-size: 0.8rem; color: var(--text-muted);">
           <span>Recognition engine (testing):</span>
-          <button id="vf-engine-toggle" class="btn-outline" style="padding: 3px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm);">
+          <button id="vf-engine-toggle" class="btn-outline vf-engine-btn">
             ${this.useWhisper ? 'On-device Whisper' : 'Browser (live)'}
           </button>
         </div>
@@ -433,10 +490,14 @@ export class VoiceFinderModule {
         </div>
 
         <!-- Manual search fallback -->
-        <div style="width: 100%; display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
-          <input type="text" id="voice-manual-input" class="search-input" style="margin-bottom: 0; text-align: right; flex: 1; min-width: 0;" dir="rtl" placeholder="Or type the verse in Arabic here...">
-          <button id="voice-manual-btn" class="btn-gold" style="white-space: nowrap; flex-shrink: 0;">Search</button>
+        <div class="vf-search-row" style="width: 100%; display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+          <input type="search" id="voice-manual-input" class="search-input" enterkeyhint="search" autocomplete="off" aria-label="Type a verse in Arabic" style="margin-bottom: 0; text-align: right; flex: 1; min-width: 0;" dir="rtl" placeholder="أو اكتب الآية هنا…">
+          <button id="voice-manual-btn" class="btn-gold vf-action-btn" style="white-space: nowrap; flex-shrink: 0;">Search</button>
         </div>
+
+        <!-- Matches Result container (populated by the matching algorithm). History and
+             Favorites sit below it, so redrawing them never moves a result under the finger. -->
+        <div id="voice-matches-container" style="width: 100%; display: flex; flex-direction: column; gap: 16px;"></div>
 
         <!-- History & Favorites Toggle Bar -->
         <div class="vf-tabs-bar">
@@ -453,11 +514,6 @@ export class VoiceFinderModule {
         <!-- History & Favorites Panel -->
         <div id="vf-panel-container" style="width: 100%;">
           ${this.renderActivePanel()}
-        </div>
-
-        <!-- Matches Result container -->
-        <div id="voice-matches-container" style="width: 100%; display: flex; flex-direction: column; gap: 16px;">
-          <!-- Populated by matching algorithm -->
         </div>
       </div>
     `;
@@ -493,22 +549,23 @@ export class VoiceFinderModule {
           <button id="vf-clear-history" class="vf-clear-btn">Clear All</button>
         </div>
         <div class="vf-list">
-          ${history.map((item, idx) => {
+          ${history.map(item => {
             const timeAgo = this.formatTimeAgo(item.timestamp);
             const preview = item.topMatch
               ? `${item.topMatch.surahNameEn} ${item.topMatch.surah}:${item.topMatch.ayah}`
               : 'No match';
+            // The query is whatever was typed or heard, so it is escaped, never rendered as HTML
             return `
-              <div class="vf-list-item vf-history-item" data-idx="${idx}" data-query="${this.escapeAttr(item.query)}">
+              <div class="vf-list-item vf-history-item" data-id="${this.escapeHtml(item.id)}" data-query="${this.escapeHtml(item.query)}">
                 <div class="vf-list-item-main">
-                  <div class="vf-list-query" dir="rtl">${item.query}</div>
+                  <div class="vf-list-query" dir="rtl">${this.escapeHtml(item.query)}</div>
                   <div class="vf-list-meta">
                     <span>${preview}</span>
                     <span>·</span>
                     <span>${timeAgo}</span>
                   </div>
                 </div>
-                <button class="vf-delete-btn" data-history-idx="${idx}" title="Remove">
+                <button class="vf-delete-btn" data-history-id="${this.escapeHtml(item.id)}" title="Remove" aria-label="Remove from history">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
@@ -553,14 +610,14 @@ export class VoiceFinderModule {
                 ${fav.text}
               </div>
               ${fav.translation ? `<div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px; border-top: 1px dashed var(--border-color); padding-top: 8px;">${fav.translation}</div>` : ''}
-              <div style="display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
-                <button class="btn-gold fav-play-btn" data-global-id="${fav.globalId}" data-key="${fav.id}" style="padding: 5px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm);">
+              <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+                <button class="btn-gold vf-action-btn fav-play-btn" data-global-id="${fav.globalId}" data-key="${fav.id}">
                   ▶ Play
                 </button>
-                <button class="btn-outline fav-pagemap-btn" data-surah="${fav.surah}" data-ayah="${fav.ayah}" style="padding: 5px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm); border-color: var(--accent-gold); color: var(--accent-gold);">
+                <button class="btn-outline vf-action-btn fav-pagemap-btn" data-surah="${fav.surah}" data-ayah="${fav.ayah}" style="border-color: var(--accent-gold); color: var(--accent-gold);">
                   📖 Page Map
                 </button>
-                <button class="btn-outline fav-remove-btn" data-id="${fav.id}" style="padding: 5px 10px; font-size: 0.78rem; border-radius: var(--border-radius-sm); border-color: var(--color-error); color: var(--color-error);">
+                <button class="btn-outline vf-action-btn fav-remove-btn" data-id="${fav.id}" style="border-color: var(--color-error); color: var(--color-error);">
                   ✕ Remove
                 </button>
               </div>
@@ -587,21 +644,24 @@ export class VoiceFinderModule {
 
     // Manual search button
     const handleManualSearch = () => {
-      const query = document.getElementById('voice-manual-input').value;
-      if (query.trim()) {
+      const query = document.getElementById('voice-manual-input').value.trim();
+      if (query) {
         const box = document.getElementById('voice-transcription-output');
         if (box) {
           box.classList.remove('placeholder');
           box.dir = 'rtl';
           box.innerText = query;
         }
+        // Typed text: no voice alternatives, so the last recitation's guesses aren't retried
         this.performMatch(query);
       }
     };
 
     document.getElementById('voice-manual-btn')?.addEventListener('click', handleManualSearch);
-    document.getElementById('voice-manual-input')?.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') handleManualSearch();
+    // keydown (not the deprecated keypress) also catches the phone keyboard's Search key;
+    // skip the Enter that confirms an IME composition.
+    document.getElementById('voice-manual-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) handleManualSearch();
     });
 
     // Tab toggle buttons
@@ -635,7 +695,7 @@ export class VoiceFinderModule {
 
     // History item click -> re-run search
     panel.querySelectorAll('.vf-history-item').forEach(item => {
-      item.addEventListener('click', (e) => {
+      item.addEventListener('click', async (e) => {
         // Don't trigger if clicking delete button
         if (e.target.closest('.vf-delete-btn')) return;
         const query = item.dataset.query;
@@ -648,19 +708,24 @@ export class VoiceFinderModule {
           }
           const input = document.getElementById('voice-manual-input');
           if (input) input.value = query;
-          this.performMatch(query);
+          // Re-run as text: the last recitation's alternatives don't belong to it
+          const shown = await this.performMatch(query);
+          // The results now sit above this list, so bring the query and the first result
+          // into view, just below the sticky app header
+          if (shown && box) {
+            const header = document.querySelector('.app-header');
+            box.style.scrollMarginTop = `${(header?.offsetHeight || 0) + 8}px`;
+            box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
         }
       });
     });
 
-    // Delete individual history item
-    panel.querySelectorAll('.vf-delete-btn[data-history-idx]').forEach(btn => {
+    // Delete individual history item (by id: positions go stale as the list changes)
+    panel.querySelectorAll('.vf-delete-btn[data-history-id]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const idx = parseInt(btn.dataset.historyIdx);
-        const history = this.getHistory();
-        history.splice(idx, 1);
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+        this.deleteHistoryEntry(btn.dataset.historyId);
         this.refreshPanel();
         this.updateTabCounts();
       });
@@ -676,13 +741,7 @@ export class VoiceFinderModule {
     });
 
     panel.querySelectorAll('.fav-pagemap-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const surahNum = parseInt(btn.dataset.surah);
-        const ayahNum = parseInt(btn.dataset.ayah);
-        if (window.app) {
-          window.app.navigateToPageMap(surahNum, ayahNum);
-        }
-      });
+      btn.addEventListener('click', () => this.openPageMap(btn));
     });
 
     panel.querySelectorAll('.fav-remove-btn').forEach(btn => {
@@ -721,14 +780,55 @@ export class VoiceFinderModule {
     }
   }
 
-  // Refresh the star states on visible result cards
+  // Opening the Page Map can take a while (navigateToPageMap scans the surah's page
+  // layouts one by one), so the button shows that and further taps are ignored.
+  async openPageMap(btn) {
+    if (!window.app || this.openingPageMap) return;
+    this.openingPageMap = true;
+    const label = btn.innerHTML;
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Opening page…';
+    try {
+      await window.app.navigateToPageMap(parseInt(btn.dataset.surah), parseInt(btn.dataset.ayah));
+    } catch (e) {
+      console.error('Could not open the Page Map:', e);
+    } finally {
+      this.openingPageMap = false;
+      // Still on this page (the app didn't navigate): give the button back
+      if (btn.isConnected) {
+        btn.disabled = false;
+        btn.removeAttribute('aria-busy');
+        btn.innerHTML = label;
+      }
+    }
+  }
+
+  // Save / Saved toggle on a result card. Both states have the same width (CSS), so
+  // tapping it never reflows the card; aria-pressed carries the state for screen readers.
+  saveButtonHtml(a, isFav) {
+    const ref = `${a.surahNameEn || ''} ${a.surah}:${a.ayah}`.trim();
+    const verse = { id: a.id, surah: a.surah, ayah: a.ayah, surahName: a.surahName, surahNameEn: a.surahNameEn, text: a.text, translation: a.translation, globalId: a.globalId };
+    return `
+      <button class="vf-star-btn ${isFav ? 'starred' : ''}" data-verse-id="${this.escapeHtml(a.id)}" data-ref="${this.escapeHtml(ref)}" data-verse='${this.escapeHtml(JSON.stringify(verse))}' aria-pressed="${isFav}" aria-label="${isFav ? 'Saved' : 'Save'} ${this.escapeHtml(ref)}" title="${isFav ? 'Remove from Favorites' : 'Add to Favorites'}">
+        ${this.saveButtonInner(isFav)}
+      </button>`;
+  }
+
+  saveButtonInner(isFav) {
+    return `<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="${isFav ? 'var(--accent-gold)' : 'none'}" stroke="${isFav ? 'var(--accent-gold)' : 'currentColor'}" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span>${isFav ? 'Saved' : 'Save'}</span>`;
+  }
+
+  // Refresh the Save buttons on visible result cards, in place
   updateStarStates() {
     this.container.querySelectorAll('.vf-star-btn').forEach(btn => {
-      const id = btn.dataset.verseId;
-      const isFav = this.isFavorite(id);
+      const isFav = this.isFavorite(btn.dataset.verseId);
+      if (btn.getAttribute('aria-pressed') === String(isFav)) return; // unchanged
       btn.classList.toggle('starred', isFav);
+      btn.setAttribute('aria-pressed', String(isFav));
+      btn.setAttribute('aria-label', `${isFav ? 'Saved' : 'Save'} ${btn.dataset.ref}`);
       btn.title = isFav ? 'Remove from Favorites' : 'Add to Favorites';
-      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="${isFav ? 'var(--accent-gold)' : 'none'}" stroke="${isFav ? 'var(--accent-gold)' : 'currentColor'}" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+      btn.innerHTML = this.saveButtonInner(isFav);
     });
   }
 
@@ -744,14 +844,25 @@ export class VoiceFinderModule {
     return new Date(timestamp).toLocaleDateString();
   }
 
-  escapeAttr(str) {
-    return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // For text and attribute values alike (& first, so existing entities survive a round trip)
+  escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   // --- Matching ---
-  async performMatch(transcription) {
+  // `alternatives` are the recognizer's other guesses for a recitation. Only voice input
+  // has them; typed and history searches pass none, so an old recitation can't leak in.
+  // Resolves to true once this search's results (or "No Matches Found") are on screen.
+  async performMatch(transcription, { alternatives = [] } = {}) {
     const resultsContainer = document.getElementById('voice-matches-container');
-    if (!resultsContainer) return;
+    if (!resultsContainer || this.destroyed) return false;
+    const token = ++this.matchToken;
+    const superseded = () => this.destroyed || token !== this.matchToken;
 
     resultsContainer.innerHTML = `
       <div style="text-align: center; padding: 20px;">
@@ -763,27 +874,32 @@ export class VoiceFinderModule {
     try {
       // Search with the primary transcription
       let matches = await findClosestVerse(transcription, db);
-      
-      // If no matches and we have alternative transcripts, try those too
-      if (matches.length === 0 && this.allTranscripts.length > 1) {
-        for (let i = 1; i < this.allTranscripts.length; i++) {
-          const altMatches = await findClosestVerse(this.allTranscripts[i], db);
+
+      // If no matches and the recognizer offered alternative transcripts, try those too
+      if (matches.length === 0 && alternatives.length > 1) {
+        for (let i = 1; i < alternatives.length; i++) {
+          if (superseded()) return false;
+          const altMatches = await findClosestVerse(alternatives[i], db);
           if (altMatches.length > 0) {
             matches = altMatches;
             // Update the transcription display with the alternative that matched
             const box = document.getElementById('voice-transcription-output');
-            if (box) {
-              box.innerText = this.allTranscripts[i] + ' (alt.)';
+            if (box && !superseded()) {
+              box.innerText = alternatives[i] + ' (alt.)';
             }
             break;
           }
         }
       }
-      
+      // A newer search, or another page, owns the screen now
+      if (superseded()) return false;
+
       // Save to history (even if no matches, to record the attempt)
       const topMatch = matches.length > 0 ? matches[0].ayah : null;
       this.saveToHistory(transcription, topMatch);
       this.updateTabCounts();
+      // An open History list must match storage (the entry may have moved to the top)
+      if (this.activeTab === 'history') this.refreshPanel();
 
       if (matches.length === 0) {
         resultsContainer.innerHTML = `
@@ -792,7 +908,7 @@ export class VoiceFinderModule {
             <p style="font-size: 0.9rem; color: var(--text-secondary);">We couldn't match your recitation in the database. Try speaking more clearly, recite a longer portion, or use the text search box above.</p>
           </div>
         `;
-        return;
+        return true;
       }
 
       // Render matched cards
@@ -805,9 +921,7 @@ export class VoiceFinderModule {
           <div class="card" style="border-color: ${idx === 0 ? 'var(--accent-gold)' : 'var(--border-color)'};">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; flex-wrap: wrap; gap: 8px;">
               <div style="display: flex; align-items: center; gap: 8px;">
-                <button class="vf-star-btn ${isFav ? 'starred' : ''}" data-verse-id="${a.id}" data-verse='${this.escapeAttr(JSON.stringify({ id: a.id, surah: a.surah, ayah: a.ayah, surahName: a.surahName, surahNameEn: a.surahNameEn, text: a.text, translation: a.translation, globalId: a.globalId }))}' title="${isFav ? 'Remove from Favorites' : 'Add to Favorites'}">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="${isFav ? 'var(--accent-gold)' : 'none'}" stroke="${isFav ? 'var(--accent-gold)' : 'currentColor'}" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-                </button>
+                ${this.saveButtonHtml(a, isFav)}
                 <span class="comparison-surah" style="font-weight: 700;">
                   ${a.surahNameEn || ''} (${a.surahName || ''})
                 </span>
@@ -825,12 +939,12 @@ export class VoiceFinderModule {
               ${a.text}
             </div>
             <div style="font-size: 0.9rem; color: var(--text-secondary); line-height: 1.5; border-top: 1px dashed var(--border-color); padding-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-              <div style="flex: 1; min-width: 0;">${a.translation || ''}</div>
-              <div style="display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap;">
-                <button class="btn-gold play-result-btn" data-global-id="${a.globalId}" data-key="${a.id}" style="padding: 6px 12px; font-size: 0.8rem; border-radius: var(--border-radius-sm);">
+              <div style="flex: 1 1 180px; min-width: 0;">${a.translation || ''}</div>
+              <div style="display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap;">
+                <button class="btn-gold vf-action-btn play-result-btn" data-global-id="${a.globalId}" data-key="${a.id}">
                   ▶ Play
                 </button>
-                <button class="btn-outline jump-pagemap-btn" data-surah="${a.surah}" data-ayah="${a.ayah}" style="padding: 6px 12px; font-size: 0.8rem; border-radius: var(--border-radius-sm); border-color: var(--accent-gold); color: var(--accent-gold);">
+                <button class="btn-outline vf-action-btn jump-pagemap-btn" data-surah="${a.surah}" data-ayah="${a.ayah}" style="border-color: var(--accent-gold); color: var(--accent-gold);">
                   📖 Page Map
                 </button>
               </div>
@@ -848,17 +962,9 @@ export class VoiceFinderModule {
         });
       });
 
-      // Add jump-to-page-map events
+      // Add jump-to-page-map events: page-map mode at the exact ayah's page
       resultsContainer.querySelectorAll('.jump-pagemap-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const surahNum = parseInt(btn.dataset.surah);
-          const ayahNum = parseInt(btn.dataset.ayah);
-
-          // Navigate the app to page-map mode at the exact ayah's page
-          if (window.app) {
-            window.app.navigateToPageMap(surahNum, ayahNum);
-          }
-        });
+        btn.addEventListener('click', () => this.openPageMap(btn));
       });
 
       // Add star/favorite toggle events
@@ -868,16 +974,20 @@ export class VoiceFinderModule {
           this.toggleFavorite(verseData);
           this.updateStarStates();
           this.updateTabCounts();
-          // If favorites panel is open, refresh it
+          // If favorites panel is open, refresh it (it sits below the results, so the
+          // card under the finger stays put)
           if (this.activeTab === 'favorites') {
             this.refreshPanel();
           }
         });
       });
 
+      return true;
     } catch (e) {
+      if (superseded()) return false;
       console.error(e);
       resultsContainer.innerHTML = `<div class="card" style="text-align: center; color: var(--color-error);">Search failed. Please try again.</div>`;
+      return false;
     }
   }
 }

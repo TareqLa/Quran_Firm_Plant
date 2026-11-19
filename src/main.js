@@ -141,7 +141,15 @@ class AppController {
     
     // Close any leftover context menus from other modules
     document.getElementById('mushaf-context-menu')?.remove();
-    
+
+    // Let the previous module release what it holds (microphone, speech recognition)
+    // so it doesn't keep running after the user has left it.
+    try {
+      this.activeModuleInstance?.destroy?.();
+    } catch (e) {
+      console.warn('Module cleanup failed:', e);
+    }
+
     this.activeModuleName = moduleName;
     audioPlayer.stop();
 

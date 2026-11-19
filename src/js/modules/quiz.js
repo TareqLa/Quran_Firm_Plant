@@ -35,7 +35,25 @@ export class RecitationQuizModule {
     // Tarteel Whisper model (offline, currently slower/less accurate).
     this.whisperSupported = QuranASR.isSupported();
     this.useWhisper = this.whisperSupported && getAsrEngine() === 'whisper';
+    this.destroyed = false; // set by destroy() when the app leaves this page
     this.initSpeechRecognition();
+  }
+
+  // Called by the app before it switches to another module: release the microphone
+  // so nothing keeps recording after the user has left the quiz.
+  destroy() {
+    this.destroyed = true;
+    if (this.recognition) {
+      const recognition = this.recognition;
+      // Detach first: abort() still fires error/end, which would touch the next page
+      recognition.onstart = recognition.onresult = recognition.onerror = recognition.onend = null;
+      try { recognition.abort(); } catch { /* never started */ }
+      this.recognition = null;
+    }
+    // Shared singleton: a recording left running would also be stopped by the next mic tap
+    if (quranASR.isRecording) quranASR.cancelRecording();
+    this.isRecording = false;
+    this.isTranscribing = false;
   }
 
   async toggleWhisperRecitation() {
@@ -54,6 +72,7 @@ export class RecitationQuizModule {
               : `Loading Tarteel Whisper model... ${pct}%`;
           });
         }
+        if (this.destroyed) return; // left the quiz while the model loaded
         this.isRecording = true;
         if (micBtn) {
           micBtn.classList.add('listening');
@@ -69,7 +88,10 @@ export class RecitationQuizModule {
             box.innerText = text;
           }
         });
+        // Left the quiz while the browser was still opening the mic
+        if (this.destroyed) quranASR.cancelRecording();
       } catch (e) {
+        if (this.destroyed) return;
         console.error('On-device ASR failed:', e);
         if (e.name === 'NotAllowedError' || e.name === 'NotFoundError') {
           if (box) box.innerText = 'Microphone unavailable. Please allow microphone access.';
@@ -90,6 +112,8 @@ export class RecitationQuizModule {
 
       try {
         const text = await quranASR.stopAndTranscribe();
+        // Left the quiz while transcribing: grading would re-render it over the new page
+        if (this.destroyed) return;
         this.isTranscribing = false;
 
         if (!text) {
@@ -104,6 +128,7 @@ export class RecitationQuizModule {
         }
         this.checkRecitationAnswer(text);
       } catch (e) {
+        if (this.destroyed) return;
         console.error('Transcription failed:', e);
         this.isTranscribing = false;
         if (box) box.innerText = 'Transcription failed. Tap the mic and try again.';

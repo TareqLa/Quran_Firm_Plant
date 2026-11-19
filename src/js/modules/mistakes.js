@@ -54,11 +54,29 @@ export class MistakesModule {
     this.isTranscribing = false;
     this.whisperSupported = QuranASR.isSupported();
     this.useWhisper = this.whisperSupported && getAsrEngine() === 'whisper';
+    this.destroyed = false; // set by destroy() when the app leaves this page
     this.initSpeechRecognition();
   }
 
   // The header surah selector doesn't scope this module; ignore changes.
   loadSurah() {}
+
+  // Called by the app before it switches to another module: release the microphone
+  // so nothing keeps recording after the user has left My Mistakes.
+  destroy() {
+    this.destroyed = true;
+    if (this.recognition) {
+      const recognition = this.recognition;
+      // Detach first: abort() still fires error/end, which would touch the next page
+      recognition.onstart = recognition.onresult = recognition.onerror = recognition.onend = null;
+      try { recognition.abort(); } catch { /* never started */ }
+      this.recognition = null;
+    }
+    // Shared singleton: a recording left running would also be stopped by the next mic tap
+    if (quranASR.isRecording) quranASR.cancelRecording();
+    this.isRecording = false;
+    this.isTranscribing = false;
+  }
 
   async render() {
     if (!this.records) {
@@ -71,6 +89,8 @@ export class MistakesModule {
         </div>
       `;
       this.records = await collectAllMistakes();
+      // Left the page while collecting: the dashboard would be drawn over the next one
+      if (this.destroyed) return;
       this.summary = summarize(this.records);
     }
 
@@ -307,6 +327,7 @@ export class MistakesModule {
       if (!this.currentQuestion) this.qIndex++;
     }
 
+    if (this.destroyed) return; // left the page while the question was being built
     this.renderDrill();
   }
 
@@ -759,6 +780,7 @@ export class MistakesModule {
               : `Loading Tarteel Whisper model... ${pct}%`;
           });
         }
+        if (this.destroyed) return; // left the page while the model loaded
         this.isRecording = true;
         if (micBtn) {
           micBtn.classList.add('listening');
@@ -771,7 +793,10 @@ export class MistakesModule {
             box.innerText = text;
           }
         });
+        // Left the page while the browser was still opening the mic
+        if (this.destroyed) quranASR.cancelRecording();
       } catch (e) {
+        if (this.destroyed) return;
         console.error('On-device ASR failed:', e);
         this.useWhisper = false;
         if (box) box.innerText = 'On-device recognition failed. Tap the mic to use the browser engine, or Skip.';
@@ -783,6 +808,8 @@ export class MistakesModule {
       if (box) box.innerText = 'Transcribing your recitation on-device...';
       try {
         const text = await quranASR.stopAndTranscribe();
+        // Left the page while transcribing: grading would redraw the drill over the new page
+        if (this.destroyed) return;
         this.isTranscribing = false;
         if (!text) {
           if (box) box.innerText = 'No speech detected. Tap the mic and try again.';
@@ -794,6 +821,7 @@ export class MistakesModule {
         }
         this.checkPronunciation(text);
       } catch (e) {
+        if (this.destroyed) return;
         console.error('Transcription failed:', e);
         this.isTranscribing = false;
         if (box) box.innerText = 'Transcription failed. Tap the mic and try again, or Skip.';

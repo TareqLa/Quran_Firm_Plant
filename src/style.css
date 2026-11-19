@@ -2343,7 +2343,10 @@ button {
   font-family: var(--font-serif);
   font-style: italic;
   color: var(--text-secondary);
-  height: 24px;
+  /* Grows to two lines on a phone instead of overflowing onto the next block */
+  min-height: 24px;
+  max-width: 100%;
+  text-align: center;
 }
 
 .transcription-box {
@@ -2378,6 +2381,36 @@ button {
   color: var(--text-muted);
 }
 
+/* Voice Finder - manual search field: 16px text so iOS doesn't zoom in on focus */
+.vf-search-row .search-input {
+  font-size: 1rem;
+  min-height: 48px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Collapsed until the first search, so it adds no gap above History / Favorites */
+#voice-matches-container:empty {
+  display: none;
+}
+
+/* Voice Finder - actions sized for a thumb (48px; secondary controls 44px) */
+.vf-action-btn {
+  min-height: 48px;
+  justify-content: center;
+}
+
+.vf-action-btn:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
+
+.btn-outline.vf-engine-btn {
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+}
+
 /* Voice Finder - History & Favorites Tabs */
 .vf-tabs-bar {
   width: 100%;
@@ -2392,6 +2425,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  min-height: 44px;
   padding: 10px 16px;
   border-radius: var(--border-radius-sm);
   background: var(--bg-secondary);
@@ -2434,8 +2468,9 @@ button {
   background: none;
   border: 1px solid hsla(355, 62%, 40%, 0.4);
   color: var(--color-error);
-  font-size: 0.75rem;
-  padding: 4px 10px;
+  font-size: 0.8rem;
+  min-height: 44px;
+  padding: 0 14px;
   border-radius: var(--border-radius-sm);
   cursor: pointer;
   transition: all var(--transition-fast);
@@ -2498,12 +2533,15 @@ button {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: var(--border-radius-sm);
   transition: all var(--transition-fast);
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
 }
 
 .vf-delete-btn:hover {
@@ -2511,25 +2549,49 @@ button {
   background: hsla(355, 62%, 40%, 0.1);
 }
 
-/* Voice Finder - Star / Favorite Button */
+/* Voice Finder - Save / Saved toggle (labelled, 48px, same width in both states) */
 .vf-star-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  transition: all var(--transition-fast);
+  justify-content: center;
+  gap: 6px;
+  min-height: 48px;
+  min-width: 6.5rem;
+  padding: 0 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
   flex-shrink: 0;
 }
 
-.vf-star-btn:hover {
-  transform: scale(1.2);
+.vf-star-btn svg {
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
 }
 
 .vf-star-btn.starred {
+  background: hsla(45, 65%, 52%, 0.16);
+  border-color: var(--accent-gold);
+}
+
+.vf-star-btn.starred svg {
   animation: starPop 0.35s ease;
+}
+
+/* Only real hover: on touch screens :hover sticks after the tap */
+@media (hover: hover) {
+  .vf-star-btn:hover {
+    border-color: var(--accent-gold);
+  }
+
+  .vf-star-btn:hover svg {
+    transform: scale(1.2);
+  }
 }
 
 @keyframes starPop {
@@ -3070,9 +3132,9 @@ button {
     font-size: 0.8rem;
   }
 
-  /* Manual search input for voice */
+  /* Search inputs: 16px or more, or iOS zooms the page in on focus */
   .search-input {
-    font-size: 0.9rem;
+    font-size: 1rem;
     padding: 10px 12px;
   }
 
