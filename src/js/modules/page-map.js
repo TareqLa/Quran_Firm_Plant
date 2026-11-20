@@ -3,19 +3,48 @@
 
 import { db } from '../data/db.js';
 import { quranLoader } from '../data/loader.js';
-import { audioPlayer } from '../components/audio-player.js';
+import { AyahPlayer } from '../components/ayah-player.js';
+import { loadReciters, reciterInfo, reciterLabel, peekChapter } from '../data/recitations.js';
 import { SURAH_LIST } from '../components/surah-selector.js';
 
 const STORAGE_KEY_LAST_PAGE = 'pagemap-last-page';
 const STORAGE_KEY_HISTORY = 'pagemap-page-history';
 const MAX_HISTORY_ITEMS = 30;
-const BACK_SECONDS = 3; // mini player's back button
+// Listened reps (auto-counted by the player), next to the manual 'repetition-history'
+const LISTEN_HISTORY_KEY = 'listening-history';
 
-// m:ss for the mini player's clock
-function formatClock(seconds) {
-  const s = Math.max(0, Math.floor(seconds || 0));
+// m:ss for the player's clock (ms in)
+function formatClock(ms) {
+  const s = Math.max(0, Math.floor((ms || 0) / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
+
+const repeatLabel = (n) => (n === Infinity ? '∞' : `×${n}`);
+
+const escapeHtml = (text) => String(text ?? '').replace(/[&<>"']/g, (ch) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[ch]));
+
+// Player bar icons (24×24, stroke = currentColor)
+const svg = (body, { fill = 'none', size = 22 } = {}) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICONS = {
+  prev: svg('<path d="M6 5v14"/><path d="M19 6.2v11.6a.8.8 0 0 1-1.2.7L9.6 12.7a.8.8 0 0 1 0-1.4l8.2-5.8a.8.8 0 0 1 1.2.7z" fill="currentColor"/>'),
+  next: svg('<path d="M18 5v14"/><path d="M5 6.2v11.6a.8.8 0 0 0 1.2.7l8.2-5.8a.8.8 0 0 0 0-1.4L6.2 5.5A.8.8 0 0 0 5 6.2z" fill="currentColor"/>'),
+  back: svg('<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/>'),
+  fwd: svg('<path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4.5h-4.5"/>'),
+  play: '<svg class="pm-icon-play" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z"/></svg>',
+  pause: '<svg class="pm-icon-pause" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4.2" height="14" rx="1.2"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.2"/></svg>',
+  spinner: '<svg class="pm-icon-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"/></svg>',
+  repeat: svg('<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>', { size: 16 }),
+  echo: svg('<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/>', { size: 16 }),
+  reciter: svg('<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>', { size: 15 }),
+  listened: svg('<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 15a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z"/><path d="M3 15a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z"/>', { size: 15 }),
+  chevron: svg('<path d="m6 9 6 6 6-6"/>', { size: 14 }),
+  close: svg('<path d="M6 6l12 12M18 6 6 18"/>', { size: 18 }),
+  check: svg('<path d="M20 6 9 17l-5-5"/>', { size: 16 }),
+  view: svg('<line x1="21" y1="6" x2="14" y2="6"/><line x1="10" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="16" y2="18"/><line x1="12" y1="18" x2="3" y2="18"/><line x1="14" y1="4" x2="14" y2="8"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="16" x2="16" y2="20"/>', { size: 16 }),
+};
 
 // Mistake types a word can be marked with. Warm hues = recitation recall
 // errors, cool hues = knowledge errors. Border style doubles as a
@@ -78,25 +107,80 @@ export class PageMapModule {
     // Phones show the counter below the page, collapsed unless the user opened it
     this.counterOpen = localStorage.getItem('pagemap-counter-open') === '1';
 
-    // Ayah audio. The shared player holds what is loaded and where; this module
-    // only mirrors it (mini player + ayah highlight), so a re-render never loses it.
-    this.globalIds = new Map(); // verse key -> global ayah number (1–6236), for the audio file
-    this.scrubbing = false;     // the seek bar is being dragged
-    this.playerShown = false;   // an ayah was loaded at the last sync (re-renders don't reset it)
-    this.offPlayerState = audioPlayer.on('state', () => this.syncPlayback());
-    this.offPlayerTime = audioPlayer.on('time', () => this.syncPlayerTime());
+    // Listened reps, counted by the player: { 'verse-87:5': { mode, label, sessions: { 'YYYY-MM-DD': n } } }
+    this.listenHistory = {};
+
+    // Recitation player. It holds what is loaded and where; the page (ayah wash,
+    // word follow) and the player bar only mirror it, so a re-render never loses it.
+    this.player = new AyahPlayer({ describe: (key) => this.describeAyah(key) });
+    this.scrubbing = false; // the player's position bar is being dragged
+    this.ticksFor = null;   // the track the bar's word ticks were drawn for
+    this.offPlayer = [
+      this.player.on('state', (s) => this.syncPlayback(s)),
+      this.player.on('select', (s) => this.syncPlayback(s)),
+      this.player.on('word', (s) => this.syncFollow(s)),
+      this.player.on('time', (s) => this.syncPlayerTime(s)),
+      this.player.on('pass', (s) => this.addListened(s.lastPass?.key)),
+    ];
+
+    // Sheets (View options, reciter picker) stay open across re-renders
+    this.viewOpen = false;
+    this.reciterOpen = false;
+    this.reciters = null;
+    loadReciters().then((list) => {
+      this.reciters = list;
+      this.refreshReciterSheet();
+      this.syncPlayback();
+    });
+
+    // Keyboard, outside taps (sheets), and fitting the page to the screen
+    this.onKeyDown = (e) => this.handleKey(e);
+    this.onDocPointerDown = (e) => this.handleOutsidePointer(e);
+    // Fit again once the size settles, and once more a little later: some
+    // phones report a rotation before the new viewport is laid out
+    this.onResize = () => {
+      clearTimeout(this._fitTimer);
+      clearTimeout(this._fitTimerLate);
+      this._fitTimer = setTimeout(() => this.fitPage(), 80);
+      this._fitTimerLate = setTimeout(() => this.fitPage(), 450);
+    };
+    this.onFontsLoaded = () => this.onResize();
+    document.addEventListener('keydown', this.onKeyDown);
+    document.addEventListener('pointerdown', this.onDocPointerDown, true);
+    window.addEventListener('resize', this.onResize);
+    window.visualViewport?.addEventListener('resize', this.onResize);
+    document.fonts?.addEventListener?.('loadingdone', this.onFontsLoaded);
+    // The docked player can change height (an error line, a font): keep the page clear of it
+    if (typeof ResizeObserver === 'function') {
+      this.playerObserver = new ResizeObserver(() => this.onResize());
+    }
   }
 
   // Called by the app when it leaves the Page Map
   destroy() {
-    this.offPlayerState?.();
-    this.offPlayerTime?.();
+    this.offPlayer.forEach((off) => off());
+    this.player.destroy();
     this.closeContextMenu();
     this.hideWordTooltip();
+    document.removeEventListener('keydown', this.onKeyDown);
+    document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+    window.removeEventListener('resize', this.onResize);
+    window.visualViewport?.removeEventListener('resize', this.onResize);
+    document.fonts?.removeEventListener?.('loadingdone', this.onFontsLoaded);
+    this.playerObserver?.disconnect();
+    clearTimeout(this._fitTimer);
+    clearTimeout(this._fitTimerLate);
     if (this._sliderResizeHandler) {
       window.removeEventListener('resize', this._sliderResizeHandler);
       this._sliderResizeHandler = null;
     }
+  }
+
+  // "At-Tariq 86:5"
+  describeAyah(key) {
+    const surahNum = Number(String(key).split(':')[0]);
+    const name = SURAH_LIST.find((x) => x.id === surahNum)?.nameEn || 'Surah';
+    return `${name} ${key}`;
   }
 
   // --- Page History Helpers ---
@@ -144,9 +228,9 @@ export class PageMapModule {
   async loadPage(pageNumber) {
     this.closeContextMenu();
     this.hideWordTooltip();
-    // The mini player only ever shows an ayah of the page on screen. Reloading
-    // the same page (e.g. another mushaf edition) keeps it playing.
-    if (pageNumber !== this.currentPage) audioPlayer.stop();
+    // The player only ever plays an ayah of the page on screen. Reloading the
+    // same page (e.g. another mushaf edition) keeps it playing.
+    if (pageNumber !== this.currentPage) this.player.stop();
     this.currentPage = pageNumber;
     
     // Persist the last opened page and push to history
@@ -188,9 +272,13 @@ export class PageMapModule {
       }
 
       this.processPageWords();
+      // The player steps through this page's ayahs, and loads their surahs'
+      // word timings now so the first tap plays at once
+      const verseKeys = this.getOrderedVerseKeys();
+      this.player.setOrder(verseKeys);
+      this.player.prefetch([...new Set(verseKeys.map((k) => Number(k.split(':')[0])))]);
       this.render();
       this.setupEvents();
-      this.prefetchGlobalIds();
     } catch (e) {
       console.error(e);
       this.container.innerHTML = `
@@ -209,58 +297,38 @@ export class PageMapModule {
   render() {
     const history = this._getHistory();
     const hasHistory = history.length > 0;
-    
+    // A re-render replaces every control: give focus back to the one that had it
+    const focusedId = this.container.contains(document.activeElement) ? document.activeElement.id : null;
+
+    const modes = [
+      ['free', 'Free reveal', 'Free'],
+      ['sequential', 'Next word guide', 'Guide'],
+      ['first-word', 'First word anchors', 'Anchors'],
+    ];
+
     this.container.innerHTML = `
-      <!-- Single toolbar: reveal mode (left) + view toggles & page actions (right) -->
-      <div class="blank-page-controls" style="margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-        <div class="toolbar-group" style="gap: 8px;">
-          <div class="seg-control" role="group" aria-label="Reveal mode">
-            <button class="seg-btn study-mode-btn ${this.studyMode === 'free' ? 'active' : ''}" data-study-mode="free">Free reveal</button>
-            <button class="seg-btn study-mode-btn ${this.studyMode === 'sequential' ? 'active' : ''}" data-study-mode="sequential">Next word guide</button>
-            <button class="seg-btn study-mode-btn ${this.studyMode === 'first-word' ? 'active' : ''}" data-study-mode="first-word">First word anchors</button>
-          </div>
-          <button id="sil-reveal-next-btn" class="btn-quiet" ${this.studyMode !== 'sequential' ? 'style="display:none;"' : ''}>Reveal next word →</button>
+      <!-- One toolbar row: reveal mode, then Write Page, History and the View sheet -->
+      <div class="pm-toolbar">
+        <div class="seg-control pm-reveal-modes" role="group" aria-label="Reveal mode">
+          ${modes.map(([mode, long, short]) => `
+            <button type="button" class="seg-btn study-mode-btn ${this.studyMode === mode ? 'active' : ''}" data-study-mode="${mode}" aria-pressed="${this.studyMode === mode}" aria-label="${long}" title="${long}">
+              <span class="pm-lbl-long">${long}</span><span class="pm-lbl-short">${short}</span>
+            </button>`).join('')}
         </div>
 
-        <div class="toolbar-group" style="gap: 8px; align-items: center;">
-          <div class="seg-control" role="group" aria-label="View options">
-            <button id="sil-slider-toggle-btn" class="seg-btn toggle-btn ${this.sliderMode ? 'active' : ''}" title="Show a per-line slider that sweeps words visible as you read" aria-pressed="${this.sliderMode}">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="21" y1="6" x2="14" y2="6"/><line x1="10" y1="6" x2="3" y2="6"/>
-                <line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/>
-                <line x1="21" y1="18" x2="16" y2="18"/><line x1="12" y1="18" x2="3" y2="18"/>
-                <line x1="14" y1="4" x2="14" y2="8"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="16" x2="16" y2="20"/>
-              </svg>
-              Sliders
-            </button>
-            <button id="sil-gloss-toggle-btn" class="seg-btn toggle-btn ${this.showGlosses ? 'active' : ''}" title="Briefly pop up the English translation whenever a word is revealed" aria-pressed="${this.showGlosses}">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/>
-                <path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>
-              </svg>
-              Translations
-            </button>
-            <button id="sil-tajweed-toggle-btn" class="seg-btn toggle-btn ${this.tajweedMode ? 'active' : ''}" title="Colour the letters by tajweed rule (works with either mushaf edition)" aria-pressed="${this.tajweedMode}">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2 6 12a6 6 0 1 0 12 0z"/>
-              </svg>
-              Tajweed
-            </button>
-          </div>
-
-          <!-- Write This Page Button -->
-          <button id="pagemap-write-btn" class="btn-gold" style="display: flex; align-items: center; gap: 5px;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <div class="pm-toolbar-actions">
+          <button type="button" id="pagemap-write-btn" class="btn-gold pm-tool-btn" aria-label="Write Page ${this.currentPage}" title="Write Page ${this.currentPage}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 20h9"/>
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>
-            Write Page ${this.currentPage}
+            <span class="pm-lbl-long">Write Page ${this.currentPage}</span><span class="pm-lbl-short">Write</span>
           </button>
 
           <!-- Page History Toggle (icon-only; label lives in the tooltip) -->
           <div class="pagemap-history-wrapper">
-            <button id="pagemap-history-btn" class="btn-outline ${this.showHistory ? 'active' : ''}" title="Page history" aria-label="Page history" style="display: flex; align-items: center; position: relative; padding: 10px 12px;">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <button type="button" id="pagemap-history-btn" class="btn-outline pm-tool-btn pm-icon-btn ${this.showHistory ? 'active' : ''}" title="Page history" aria-label="Page history" aria-expanded="${this.showHistory}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="10"></circle>
                 <polyline points="12 6 12 12 16 14"></polyline>
               </svg>
@@ -274,7 +342,7 @@ export class PageMapModule {
                   ${hasHistory ? `<button id="pagemap-clear-history" class="pagemap-history-clear" title="Clear history">Clear All</button>` : ''}
                 </div>
                 <div class="pagemap-history-list">
-                  ${hasHistory ? history.map((entry, i) => {
+                  ${hasHistory ? history.map((entry) => {
                     const isCurrent = entry.page === this.currentPage;
                     return `
                       <button class="pagemap-history-item ${isCurrent ? 'current' : ''}" data-page="${entry.page}" ${isCurrent ? 'disabled' : ''}>
@@ -296,253 +364,645 @@ export class PageMapModule {
             ` : ''}
           </div>
 
-          <select id="mushaf-edition-select" class="selector-input" title="Mushaf edition" style="padding: 6px 12px; font-size: 0.85rem; background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 4px; cursor: pointer; margin-bottom: 0;">
-            <option value="v2" ${this.currentEdition === 'v2' ? 'selected' : ''}>Madinah V2 (Standard)</option>
-            <option value="v1" ${this.currentEdition === 'v1' ? 'selected' : ''}>Madinah V1 (Classic 1405 AH)</option>
-          </select>
+          <!-- View: sliders, translations, tajweed and the mushaf edition -->
+          <div class="pm-view-wrapper">
+            <button type="button" id="pagemap-view-btn" class="btn-outline pm-tool-btn ${this.viewOpen ? 'active' : ''}" aria-haspopup="dialog" aria-expanded="${this.viewOpen}" aria-controls="pm-view-sheet" aria-label="View options" title="View: sliders, translations, tajweed, edition">
+              ${ICONS.view}<span class="pm-lbl-long">View</span>
+            </button>
+            ${this.renderViewSheet()}
+          </div>
         </div>
       </div>
 
-      <!-- Main Display: silhouette (left/center) + repetition counter panel (right; below the page on phones) -->
-      <div class="pagemap-layout">
-        <div id="pagemap-content-area" style="display: flex; flex-direction: column; align-items: center; flex: 1 1 auto; min-width: 0;">
+      <!-- The page (left), the player and the repetition counter (right; on phones the
+           player docks at the bottom and the counter sits below the page) -->
+      <div class="pagemap-layout has-player">
+        <div id="pagemap-content-area" class="pm-main">
           ${this.renderSilhouette()}
-          ${this.renderMiniPlayer()}
         </div>
-        <aside id="pagemap-counter-panel" class="rep-panel ${this.counterOpen ? 'open' : ''}">
-          ${this.renderCounterPanelInner()}
-        </aside>
+        <div class="pm-side">
+          ${this.renderPlayerBar()}
+          <aside id="pagemap-counter-panel" class="rep-panel ${this.counterOpen ? 'open' : ''}">
+            ${this.renderCounterPanelInner()}
+          </aside>
+        </div>
       </div>
     `;
 
-    // The page was rebuilt: put back the playing ayah's highlight and the player
+    // The page was rebuilt: put back the player's state (ayah wash, word
+    // follow, the bar), then fit the 15 lines to the screen
+    this.ticksFor = null;
     this.syncPlayback();
+    this.fitPage();
+    if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   }
 
-  // --- Ayah audio: mini player + now-playing highlight ---
+  // --- View sheet (sliders, translations, tajweed, edition) ---
 
-  renderMiniPlayer() {
+  renderViewSheet() {
+    const toggle = (id, on, title, desc) => `
+      <button type="button" id="${id}" class="pm-switch toggle-btn ${on ? 'active' : ''}" aria-pressed="${on}">
+        <span class="pm-switch-text"><span class="pm-switch-title">${title}</span><span class="pm-switch-desc">${desc}</span></span>
+        <span class="pm-switch-knob" aria-hidden="true"></span>
+      </button>`;
     return `
-      <div class="pm-player" id="pm-player" role="region" aria-label="Ayah audio" hidden>
-        <div class="pm-player-inner">
-          <div class="pm-player-seek">
-            <span class="pm-player-time" id="pm-player-elapsed">0:00</span>
-            <input type="range" class="pm-player-range" id="pm-player-range" min="0" max="0" step="any" value="0" aria-label="Position in the ayah">
-            <span class="pm-player-time" id="pm-player-duration">0:00</span>
-          </div>
-          <div class="pm-player-error" id="pm-player-error" role="alert"></div>
-          <div class="pm-player-row">
-            <div class="pm-player-info">
-              <span class="pm-player-title" id="pm-player-title"></span>
-              <span class="pm-player-status" id="pm-player-status"></span>
-            </div>
-            <div class="pm-player-controls">
-              <button type="button" class="pm-btn" data-pm-act="back" aria-label="Back ${BACK_SECONDS} seconds" title="Back ${BACK_SECONDS} seconds">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8.3"/><path d="M3 3v5.3h5.3"/>
-                  <text x="12.5" y="16" text-anchor="middle" font-size="8.5" font-weight="700" font-family="Inter, sans-serif" fill="currentColor" stroke="none">${BACK_SECONDS}</text>
-                </svg>
-              </button>
-              <button type="button" class="pm-btn pm-btn-main" data-pm-act="toggle" aria-label="Play" title="Play">
-                <svg class="pm-icon-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z"/></svg>
-                <svg class="pm-icon-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4.2" height="14" rx="1.2"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.2"/></svg>
-              </button>
-              <button type="button" class="pm-btn" data-pm-act="replay" aria-label="Replay from the start" title="Replay from the start">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M19 19 9.5 12 19 5z" fill="currentColor"/><line x1="5.5" y1="5" x2="5.5" y2="19"/>
-                </svg>
-              </button>
-              <button type="button" class="pm-btn" data-pm-act="close" aria-label="Close player" title="Close player">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
-              </button>
-            </div>
-          </div>
+      <div class="pm-sheet pm-view-sheet" id="pm-view-sheet" role="dialog" aria-label="View options" ${this.viewOpen ? '' : 'hidden'}>
+        <div class="pm-sheet-head">
+          <span class="pm-sheet-title">View</span>
+          <button type="button" class="pm-sheet-close" data-sheet-close="view" aria-label="Close">${ICONS.close}</button>
         </div>
+        <div class="pm-sheet-body">
+          ${toggle('sil-slider-toggle-btn', this.sliderMode, 'Reading sliders', 'A slider on each line sweeps the words visible as you read')}
+          ${toggle('sil-gloss-toggle-btn', this.showGlosses, 'Translations', 'Briefly show the English meaning when a word is revealed')}
+          ${toggle('sil-tajweed-toggle-btn', this.tajweedMode, 'Tajweed colours', 'Colour the letters by tajweed rule (either edition)')}
+          <label class="pm-field" for="mushaf-edition-select">
+            <span class="pm-switch-title">Mushaf edition</span>
+            <select id="mushaf-edition-select" class="selector-input pm-select">
+              <option value="v2" ${this.currentEdition === 'v2' ? 'selected' : ''}>Madinah V2 (Standard)</option>
+              <option value="v1" ${this.currentEdition === 'v1' ? 'selected' : ''}>Madinah V1 (Classic 1405 AH)</option>
+            </select>
+          </label>
+          <p class="pm-sheet-tip">Tap a block to reveal the word, or an ayah number to play its recitation. Long-press (or right-click) a word to mark it, or an ayah number to hide or show the ayah. Keys: Space plays or pauses, ← → step by word, Shift with an arrow steps by ayah, R changes Repeat.</p>
+        </div>
+      </div>
+      <div class="pm-sheet-backdrop" data-sheet-close="view" ${this.viewOpen ? '' : 'hidden'}></div>
+    `;
+  }
+
+  // Open or close a sheet (one at a time). Keeps the flag, so a re-render
+  // while it's open draws it open again.
+  setSheet(name, open) {
+    if (name === 'view') {
+      this.viewOpen = open;
+      if (open) this.reciterOpen = false;
+    } else {
+      this.reciterOpen = open;
+      if (open) this.viewOpen = false;
+    }
+    this.syncSheets();
+    const sheet = this.container.querySelector(name === 'view' ? '#pm-view-sheet' : '#pm-reciter-sheet');
+    if (open && sheet) {
+      const first = sheet.querySelector(name === 'view' ? '.pm-switch' : '.pm-reciter-item.active, .pm-reciter-item');
+      first?.focus({ preventScroll: true });
+    }
+  }
+
+  syncSheets() {
+    const c = this.container;
+    const apply = (sheetSel, btnSel, kind, open) => {
+      const sheet = c.querySelector(sheetSel);
+      if (sheet) sheet.hidden = !open;
+      c.querySelectorAll(`.pm-sheet-backdrop[data-sheet-close="${kind}"]`).forEach((b) => { b.hidden = !open; });
+      const btn = c.querySelector(btnSel);
+      if (btn) {
+        btn.setAttribute('aria-expanded', String(open));
+        btn.classList.toggle('active', open);
+      }
+    };
+    apply('#pm-view-sheet', '#pagemap-view-btn', 'view', this.viewOpen);
+    apply('#pm-reciter-sheet', '#pm-reciter', 'reciter', this.reciterOpen);
+  }
+
+  // Esc and outside taps. Returns true when something was open.
+  closeSheets() {
+    if (!this.viewOpen && !this.reciterOpen) return false;
+    const returnTo = this.viewOpen ? '#pagemap-view-btn' : '#pm-reciter';
+    const inside = this.container.querySelector(this.viewOpen ? '#pm-view-sheet' : '#pm-reciter-sheet')?.contains(document.activeElement);
+    this.viewOpen = false;
+    this.reciterOpen = false;
+    this.syncSheets();
+    if (inside) this.container.querySelector(returnTo)?.focus({ preventScroll: true });
+    return true;
+  }
+
+  handleOutsidePointer(e) {
+    if (!this.viewOpen && !this.reciterOpen) return;
+    const t = e.target;
+    if (!(t instanceof Element)) return;
+    // The phone backdrop closes on its own click; closing it here would let
+    // that click fall through to the page (and reveal a word)
+    if (t.closest('.pm-sheet-backdrop')) return;
+    if (this.viewOpen && t.closest('.pm-view-wrapper')) return;
+    if (this.reciterOpen && (t.closest('#pm-reciter-sheet') || t.closest('#pm-reciter'))) return;
+    this.closeSheets();
+  }
+
+  // --- Player bar ---
+
+  renderPlayerBar() {
+    return `
+      <div class="pm-player" id="pm-player" role="region" aria-label="Recitation player">
+        <div class="pm-now">
+          <div class="pm-info">
+            <span class="pm-title" id="pm-title"></span>
+            <span class="pm-status" id="pm-status"></span>
+          </div>
+          <span class="pm-word" id="pm-word" lang="ar" dir="rtl"></span>
+          <button type="button" class="pm-chip pm-listened" id="pm-listened" data-pm-act="listened" hidden>
+            ${ICONS.listened}<span class="pm-listened-n" id="pm-listened-n">0</span><span class="pm-listened-lbl">today</span>
+          </button>
+        </div>
+        <div class="pm-track-row">
+          <span class="pm-time" id="pm-elapsed">0:00</span>
+          <div class="pm-track" id="pm-track" role="slider" tabindex="0" aria-label="Position in the ayah" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+            <div class="pm-rail"><div class="pm-fill" id="pm-fill"></div><div class="pm-lens" id="pm-lens"></div></div>
+            <div class="pm-ticks" id="pm-ticks"></div>
+            <div class="pm-thumb" id="pm-thumb"></div>
+          </div>
+          <span class="pm-time" id="pm-duration">0:00</span>
+        </div>
+        <div class="pm-error" id="pm-error" role="alert"></div>
+        <div class="pm-ctl">
+          <button type="button" class="pm-btn" data-pm-act="prev" aria-label="Previous ayah" title="Previous ayah (Shift+←)">${ICONS.prev}</button>
+          <button type="button" class="pm-btn pm-step" data-pm-act="back" aria-label="Back one word" title="Back one word (←)">${ICONS.back}<small>word</small></button>
+          <button type="button" class="pm-btn pm-btn-main" data-pm-act="toggle" aria-label="Play" title="Play (Space)">${ICONS.play}${ICONS.pause}${ICONS.spinner}</button>
+          <button type="button" class="pm-btn pm-step" data-pm-act="fwd" aria-label="Forward one word" title="Forward one word (→)">${ICONS.fwd}<small>word</small></button>
+          <button type="button" class="pm-btn" data-pm-act="next" aria-label="Next ayah" title="Next ayah (Shift+→)">${ICONS.next}</button>
+        </div>
+        <div class="pm-opts">
+          <button type="button" class="pm-chip" data-pm-act="repeat" id="pm-repeat" title="Repeat the ayah (R)">${ICONS.repeat}<span id="pm-repeat-n">×1</span></button>
+          <button type="button" class="pm-chip" data-pm-act="rate" id="pm-rate" title="Speed">1×</button>
+          <button type="button" class="pm-chip" data-pm-act="echo" id="pm-echo" aria-pressed="false" title="Echo: after each ayah, a pause as long as the ayah, for you to say it back">${ICONS.echo}<span>Echo</span></button>
+          <button type="button" class="pm-chip pm-reciter" data-pm-act="reciter" id="pm-reciter" aria-haspopup="dialog" aria-expanded="${this.reciterOpen}" aria-controls="pm-reciter-sheet" title="Reciter">${ICONS.reciter}<span class="pm-reciter-name" id="pm-reciter-name"></span>${ICONS.chevron}</button>
+        </div>
+        ${this.renderReciterSheet()}
       </div>
     `;
   }
 
-  bindMiniPlayer() {
-    const player = this.container.querySelector('#pm-player');
-    if (!player) return;
+  renderReciterSheet() {
+    return `
+      <div class="pm-sheet pm-reciter-sheet" id="pm-reciter-sheet" role="dialog" aria-label="Reciter" ${this.reciterOpen ? '' : 'hidden'}>
+        <div class="pm-sheet-head">
+          <span class="pm-sheet-title">Reciter</span>
+          <button type="button" class="pm-sheet-close" data-sheet-close="reciter" aria-label="Close">${ICONS.close}</button>
+        </div>
+        <div class="pm-sheet-body pm-reciter-list" id="pm-reciter-list">${this.renderReciterItems()}</div>
+      </div>
+      <div class="pm-sheet-backdrop" data-sheet-close="reciter" ${this.reciterOpen ? '' : 'hidden'}></div>
+    `;
+  }
 
-    player.addEventListener('click', (e) => {
+  renderReciterItems() {
+    const current = this.player.reciterId;
+    const list = this.reciters || [reciterInfo(current)];
+    const surahs = this.pageData ? this.pageSurahs() : [];
+    return list.map((r) => {
+      // Known to have no word timings here (none from quran.com, or the surah file failed)
+      const noWords = surahs.length > 0 && surahs.every((s) =>
+        peekChapter(r.id, s) === null || this.player.failedFiles.has(`${r.id}:${s}`));
+      const on = r.id === current;
+      return `
+        <button type="button" class="pm-reciter-item ${on ? 'active' : ''}" data-reciter-id="${r.id}" aria-pressed="${on}">
+          <span class="pm-reciter-item-text">
+            <span class="pm-reciter-item-name">${escapeHtml(r.name)}</span>
+            ${r.style ? `<span class="pm-reciter-item-style">${escapeHtml(r.style)}</span>` : ''}
+            ${noWords ? '<span class="pm-reciter-item-note">No word timings here: plays ayah by ayah</span>' : ''}
+          </span>
+          ${on ? ICONS.check : ''}
+        </button>`;
+    }).join('');
+  }
+
+  refreshReciterSheet() {
+    const list = this.container.querySelector('#pm-reciter-list');
+    if (list) list.innerHTML = this.renderReciterItems();
+  }
+
+  pageSurahs() {
+    return [...new Set(this.getOrderedVerseKeys().map((k) => Number(k.split(':')[0])))];
+  }
+
+  bindPlayerBar() {
+    const bar = this.container.querySelector('#pm-player');
+    if (!bar) return;
+    this.playerObserver?.disconnect();
+    this.playerObserver?.observe(bar);
+
+    bar.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-reciter-id]');
+      if (item) {
+        this.player.setReciter(Number(item.dataset.reciterId));
+        this.setSheet('reciter', false);
+        this.refreshReciterSheet();
+        bar.querySelector('#pm-reciter')?.focus({ preventScroll: true });
+        return;
+      }
+      if (e.target.closest('[data-sheet-close="reciter"]')) {
+        this.setSheet('reciter', false);
+        return;
+      }
       const btn = e.target.closest('[data-pm-act]');
-      if (!btn) return;
+      if (!btn || btn.disabled) return;
+      const p = this.player;
       switch (btn.dataset.pmAct) {
-        case 'toggle':
-          if (audioPlayer.isPlaying) audioPlayer.pause();
-          else audioPlayer.play();
+        case 'toggle': p.toggle(); break;
+        case 'prev': p.prevAyah(); break;
+        case 'next': p.nextAyah(); break;
+        case 'back': p.backWord(); break;
+        case 'fwd': p.fwdWord(); break;
+        case 'repeat': p.cycleRepeat(); break;
+        case 'rate': p.cycleRate(); break;
+        case 'echo': p.setEcho(!p.echo); break;
+        case 'retry': p.retry(); break;
+        case 'reciter':
+          this.refreshReciterSheet();
+          this.setSheet('reciter', !this.reciterOpen);
           break;
-        case 'back': audioPlayer.skip(-BACK_SECONDS); break;
-        case 'replay': audioPlayer.replay(); break;
-        case 'close': audioPlayer.stop(); break;
-        case 'retry': audioPlayer.retry(); break;
+        case 'listened':
+          if (p.key) this.openCounterFor(p.key);
+          break;
+        default:
       }
     });
 
-    // Seek bar: tap or drag to seek. While a finger or mouse holds it, time
-    // updates leave the thumb alone so it doesn't jump back under the pointer.
-    const range = player.querySelector('#pm-player-range');
-    const endScrub = () => {
-      if (!this.scrubbing) return;
-      this.scrubbing = false;
-      this.syncPlayerTime();
+    // Position bar: tap or drag to seek (playing or paused stays so). The
+    // arrow keys step by word through handleKey(); Home / End go to the ends.
+    const track = bar.querySelector('#pm-track');
+    const seekAt = (clientX) => {
+      const s = this.player.getState();
+      if (!s.key || !s.duration) return;
+      const r = track.getBoundingClientRect();
+      if (!r.width) return;
+      this.player.seek(Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * s.duration);
     };
-    range.addEventListener('pointerdown', () => {
-      this.scrubbing = true;
-      window.addEventListener('pointerup', endScrub, { once: true });
-      window.addEventListener('pointercancel', endScrub, { once: true });
-    });
-    range.addEventListener('input', () => {
-      audioPlayer.seek(parseFloat(range.value));
-      this.syncPlayerTime();
-    });
-    range.addEventListener('change', endScrub);
-    // Arrow keys move one second in time (Home / End / Page keys stay native)
-    range.addEventListener('keydown', (e) => {
-      const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
-      if (!step) return;
+    track.addEventListener('pointerdown', (e) => {
+      if (e.button > 0) return;
+      const s = this.player.getState();
+      if (!s.key || !s.duration) return;
       e.preventDefault();
-      audioPlayer.skip(step);
+      try { track.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+      this.scrubbing = true;
+      track.classList.add('is-dragging');
+      seekAt(e.clientX);
+      const move = (ev) => seekAt(ev.clientX);
+      const up = () => {
+        this.scrubbing = false;
+        track.classList.remove('is-dragging');
+        track.removeEventListener('pointermove', move);
+        track.removeEventListener('pointerup', up);
+        track.removeEventListener('pointercancel', up);
+      };
+      track.addEventListener('pointermove', move);
+      track.addEventListener('pointerup', up);
+      track.addEventListener('pointercancel', up);
+    });
+    track.addEventListener('keydown', (e) => {
+      const s = this.player.getState();
+      if (!s.key) return;
+      if (e.key === 'Home') {
+        e.preventDefault();
+        this.player.seek(0);
+      } else if (e.key === 'End' && s.words.length) {
+        e.preventDefault();
+        this.player.seek(s.words[s.words.length - 1].st);
+      }
     });
   }
 
-  // Mirror the shared player on this page: the playing ayah's highlight and the
-  // mini player. Runs on every player state change and after every render().
-  syncPlayback() {
-    const s = audioPlayer.getState();
-    const loaded = !!s.key && s.status !== 'idle';
-    const active = s.status === 'playing' || s.status === 'loading';
+  // Mirror the player on this page. Runs on every player change and after every render().
+  syncPlayback(s = this.player.getState()) {
+    this.syncFollow(s);
+    this.syncPlayerBar(s);
+  }
 
-    // Highlight: clear the previous ayah, then mark the loaded one
-    this.container.querySelectorAll('.ayah-end-block.playing, .ayah-end-block.paused').forEach(el => {
+  // The page follows the reciter: the loaded ayah's number shows playing or
+  // paused, the ayah gets a green wash, and the word being recited is
+  // underlined (or, while hidden, its block is outlined, text still hidden).
+  syncFollow(s = this.player.getState()) {
+    const c = this.container;
+    const loaded = !!s.key && s.status !== 'idle';
+    const active = s.status === 'playing' || s.status === 'loading' || s.status === 'gap';
+    const washed = loaded && s.status !== 'ended' && s.status !== 'error';
+
+    c.querySelectorAll('.ayah-end-block.playing, .ayah-end-block.paused').forEach((el) => {
       el.classList.remove('playing', 'paused', 'loading');
     });
-    this.container.querySelectorAll('.mushaf-word-box.ayah-playing').forEach(el => el.classList.remove('ayah-playing'));
-    let marker = null;
     if (loaded) {
-      marker = this.container.querySelector(`.ayah-end-block[data-verse-key="${s.key}"]`);
+      const marker = c.querySelector(`.ayah-end-block[data-verse-key="${s.key}"]`);
       if (marker) {
         marker.classList.add(active ? 'playing' : 'paused');
         marker.classList.toggle('loading', s.status === 'loading');
       }
-      if (active) {
-        this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${s.key}"]:not(.ayah-end-block)`)
-          .forEach(el => el.classList.add('ayah-playing'));
-      }
     }
 
-    // Mini player
-    const appeared = loaded && !this.playerShown;
-    this.playerShown = loaded;
-    const player = this.container.querySelector('#pm-player');
-    const layout = this.container.querySelector('.pagemap-layout');
-    if (!player) return;
-    player.hidden = !loaded;
-    layout?.classList.toggle('has-player', loaded);
-    if (!loaded) return;
+    const washKey = washed ? s.key : null;
+    c.querySelectorAll('.mushaf-word-box.ayah-playing').forEach((el) => {
+      if (el.dataset.verseKey !== washKey) el.classList.remove('ayah-playing');
+    });
+    if (washKey) {
+      c.querySelectorAll(`.mushaf-word-box[data-verse-key="${washKey}"]:not(.ayah-end-block)`)
+        .forEach((el) => el.classList.add('ayah-playing'));
+    }
 
-    player.classList.toggle('is-active', active);
-    player.classList.toggle('is-loading', s.status === 'loading');
-    player.classList.toggle('has-error', s.status === 'error');
+    const word = washed && s.status !== 'gap' && s.wordIndex >= 0 ? s.words[s.wordIndex] : null;
+    const wordEl = word
+      ? c.querySelector(`.mushaf-word-box[data-verse-key="${s.key}"][data-position="${word.pos}"]:not(.ayah-end-block)`)
+      : null;
+    c.querySelectorAll('.mushaf-word-box.word-current').forEach((el) => {
+      if (el !== wordEl) el.classList.remove('word-current');
+    });
+    wordEl?.classList.add('word-current');
 
-    const [surahNum] = s.key.split(':').map(Number);
-    const surahName = SURAH_LIST.find(x => x.id === surahNum)?.nameEn || 'Surah';
-    player.querySelector('#pm-player-title').textContent = `${surahName} ${s.key}`;
+    // The bar shows the word in Arabic (or "Your turn" during an Echo pause)
+    const slot = c.querySelector('#pm-word');
+    if (slot) {
+      let text = '';
+      let cls = '';
+      if (s.status === 'gap') {
+        text = 'Your turn: say it back';
+        cls = 'is-turn';
+      } else if (loaded && s.mode === 'ayah') {
+        text = 'No word timings for this reciter';
+        cls = 'is-note';
+      } else if (wordEl) {
+        text = wordEl.dataset.text || '';
+      }
+      if (slot.textContent !== text) slot.textContent = text;
+      slot.className = `pm-word ${cls}`;
+      slot.setAttribute('lang', cls ? 'en' : 'ar');
+      slot.setAttribute('dir', cls ? 'ltr' : 'rtl');
+    }
+  }
 
-    const statusText = {
-      loading: 'Loading…',
-      playing: 'Playing',
-      paused: 'Paused',
-      ended: 'Finished',
-      error: 'Couldn’t play',
-    }[s.status] || '';
-    player.querySelector('#pm-player-status').textContent = statusText;
+  playerStatusText(s) {
+    if (!s.key || s.status === 'idle') return `Recited by ${reciterInfo(s.reciterId).short}`;
+    const of = s.repeat === Infinity ? '∞' : s.repeat;
+    const loop = s.repeat !== 1 ? ` · ${s.repeat === Infinity ? s.loop + 1 : Math.min(s.loop + 1, s.repeat)} of ${of}` : '';
+    switch (s.status) {
+      case 'loading': return 'Loading…';
+      case 'playing': return `Playing${loop}`;
+      case 'paused': return `Paused${loop}`;
+      case 'gap': return `Your turn · ${Math.ceil(s.gapLeft / 1000)} s`;
+      case 'ended': return s.repeat !== 1 ? `Done · ${repeatLabel(s.repeat)}` : 'Done';
+      case 'error': return 'Couldn’t play';
+      default: return '';
+    }
+  }
 
-    const toggleLabel = active ? 'Pause'
+  syncPlayerBar(s = this.player.getState()) {
+    const bar = this.container.querySelector('#pm-player');
+    if (!bar) return;
+    const $ = (sel) => bar.querySelector(sel);
+    const loaded = !!s.key && s.status !== 'idle';
+    const active = s.status === 'playing' || s.status === 'loading' || s.status === 'gap';
+    bar.classList.toggle('is-idle', !loaded);
+    bar.classList.toggle('is-active', active);
+    bar.classList.toggle('is-loading', s.status === 'loading');
+    bar.classList.toggle('is-gap', s.status === 'gap');
+    bar.classList.toggle('has-error', s.status === 'error');
+    bar.classList.toggle('no-words', loaded && s.mode === 'ayah');
+
+    $('#pm-title').textContent = loaded ? this.describeAyah(s.key) : 'Tap an ayah number to listen';
+    $('#pm-status').textContent = this.playerStatusText(s);
+
+    // Listened today, for the loaded ayah (opens the Repetition Counter)
+    const chip = $('#pm-listened');
+    if (loaded) {
+      const n = this.listenedToday(s.key);
+      chip.hidden = false;
+      $('#pm-listened-n').textContent = String(n);
+      const label = `Listened to ${s.key} ${n} ${n === 1 ? 'time' : 'times'} today. Open the Repetition Counter.`;
+      chip.setAttribute('aria-label', label);
+      chip.title = label;
+    } else {
+      chip.hidden = true;
+    }
+
+    const btn = (act) => bar.querySelector(`[data-pm-act="${act}"]`);
+    btn('prev').disabled = !loaded;
+    btn('next').disabled = !loaded || !s.hasNext;
+    btn('back').disabled = !loaded || !s.mode;
+    btn('fwd').disabled = !loaded || !s.mode || s.status === 'ended';
+    // Without word timings the word steps move two seconds instead
+    const byTime = s.mode === 'ayah';
+    bar.querySelectorAll('.pm-step small').forEach((el) => { el.textContent = byTime ? '2 s' : 'word'; });
+    btn('back').setAttribute('aria-label', byTime ? 'Back 2 seconds' : 'Back one word');
+    btn('fwd').setAttribute('aria-label', byTime ? 'Forward 2 seconds' : 'Forward one word');
+
+    const main = btn('toggle');
+    const label = active ? 'Pause'
       : s.status === 'ended' ? 'Play again'
       : s.status === 'error' ? 'Try again'
-      : s.currentTime > 0 ? 'Continue' : 'Play';
-    const toggleBtn = player.querySelector('[data-pm-act="toggle"]');
-    toggleBtn.setAttribute('aria-label', toggleLabel);
-    toggleBtn.title = toggleLabel;
+      : loaded && s.position > 0 ? 'Continue' : 'Play';
+    main.setAttribute('aria-label', label);
+    main.title = `${label} (Space)`;
 
-    // Inline error with Retry (replaces the old alert). Written once per
-    // failure so screen readers announce it once.
-    const errorEl = player.querySelector('#pm-player-error');
+    $('#pm-repeat-n').textContent = repeatLabel(s.repeat);
+    const rep = $('#pm-repeat');
+    rep.classList.toggle('on', s.repeat !== 1);
+    rep.setAttribute('aria-label', s.repeat === 1 ? 'Repeat: once' : s.repeat === Infinity ? 'Repeat: until paused' : `Repeat: ${s.repeat} times`);
+    const rate = $('#pm-rate');
+    rate.textContent = `${s.rate}×`;
+    rate.classList.toggle('on', s.rate !== 1);
+    rate.setAttribute('aria-label', `Speed ${s.rate}×`);
+    const echo = $('#pm-echo');
+    echo.classList.toggle('on', s.echo);
+    echo.setAttribute('aria-pressed', String(s.echo));
+    const r = reciterInfo(s.reciterId);
+    $('#pm-reciter-name').textContent = r.short;
+    $('#pm-reciter').setAttribute('aria-label', `Reciter: ${reciterLabel(r)}`);
+
+    // Inline error with Retry, written once per failure so it's announced once
+    const err = $('#pm-error');
     if (s.status === 'error') {
-      if (!errorEl.firstChild) {
-        errorEl.innerHTML = `
-          <span>Couldn’t load this ayah’s recitation. Check your internet connection.</span>
+      if (!err.firstChild) {
+        err.innerHTML = `
+          <span>Couldn’t load this recitation. Check your internet connection.</span>
           <button type="button" class="pm-player-retry" data-pm-act="retry">Retry</button>
         `;
       }
-    } else if (errorEl.firstChild) {
-      errorEl.textContent = '';
+    } else if (err.firstChild) {
+      err.textContent = '';
     }
 
-    // Phones: the player is fixed to the bottom, so the page reserves its height
-    // at the end (CSS) and never hides the last lines for good.
-    layout?.style.setProperty('--pm-player-h', `${player.offsetHeight}px`);
-
-    // If the player just appeared over the ayah that was tapped, bring it into
-    // view (only then: a toolbar re-render while it plays never scrolls)
-    if (appeared && marker) {
-      const r = marker.getBoundingClientRect();
-      if (r.bottom > player.getBoundingClientRect().top - 8) {
-        marker.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }
+    // A tick for each word on the position bar
+    const ticksKey = loaded && s.duration ? `${s.key}|${s.reciterId}|${s.mode}|${Math.round(s.duration)}` : null;
+    if (ticksKey !== this.ticksFor) {
+      this.ticksFor = ticksKey;
+      $('#pm-ticks').innerHTML = ticksKey && s.words.length > 1
+        ? s.words.slice(1).map((w) => `<i style="left:${((w.st / s.duration) * 100).toFixed(2)}%"></i>`).join('')
+        : '';
     }
 
+    // Phones: the bar is docked, so the page reserves its height at the end
+    this.container.querySelector('.pagemap-layout')?.style.setProperty('--pm-player-h', `${bar.offsetHeight}px`);
     this.syncPlayerTime(s);
   }
 
-  // Seek bar and clock; runs on every time update while an ayah is loaded
-  syncPlayerTime(s = audioPlayer.getState()) {
-    const player = this.container.querySelector('#pm-player');
-    if (!player || player.hidden || !s.key) return;
-    const range = player.querySelector('#pm-player-range');
-    const duration = s.duration;
-    if (!this.scrubbing) {
-      range.max = String(duration || 0);
-      range.value = String(Math.min(s.currentTime, duration || 0));
+  // Position bar, clock and the Echo countdown; runs on every frame while playing
+  syncPlayerTime(s = this.player.getState()) {
+    const bar = this.container.querySelector('#pm-player');
+    if (!bar) return;
+    const dur = s.duration;
+    const loaded = !!s.key && s.status !== 'idle';
+    const pos = loaded ? Math.min(s.position, dur || s.position) : 0;
+    const f = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
+    const pct = `${(f * 100).toFixed(2)}%`;
+    bar.querySelector('#pm-fill').style.width = pct;
+    bar.querySelector('#pm-thumb').style.left = pct;
+
+    const lens = bar.querySelector('#pm-lens');
+    const word = loaded && dur && s.status !== 'ended' && s.status !== 'gap' && s.wordIndex >= 0 ? s.words[s.wordIndex] : null;
+    if (word) {
+      lens.style.left = `${((word.st / dur) * 100).toFixed(2)}%`;
+      lens.style.width = `${(((word.en - word.st) / dur) * 100).toFixed(2)}%`;
+    } else {
+      lens.style.width = '0';
     }
-    const shown = this.scrubbing ? parseFloat(range.value) || 0 : s.currentTime;
-    const pct = duration ? Math.min(100, (shown / duration) * 100) : 0;
-    range.style.setProperty('--pm-pct', `${pct}%`);
-    range.setAttribute('aria-valuetext', `${formatClock(shown)} of ${duration ? formatClock(duration) : 'unknown length'}`);
-    player.querySelector('#pm-player-elapsed').textContent = formatClock(shown);
-    player.querySelector('#pm-player-duration').textContent = duration ? formatClock(duration) : '–:––';
-  }
 
-  // Global ayah numbers for every ayah on the page, so a tap can start the
-  // audio straight away (mobile browsers want play() inside the tap)
-  async prefetchGlobalIds() {
-    for (const verseKey of this.getOrderedVerseKeys()) {
-      await this.globalIdFor(verseKey);
+    bar.querySelector('#pm-elapsed').textContent = formatClock(pos);
+    bar.querySelector('#pm-duration').textContent = dur ? formatClock(dur) : (loaded ? '–:––' : '0:00');
+    const track = bar.querySelector('#pm-track');
+    track.setAttribute('aria-valuemax', String(Math.round(dur / 1000)));
+    track.setAttribute('aria-valuenow', String(Math.round(pos / 1000)));
+    track.setAttribute('aria-valuetext', loaded ? `${formatClock(pos)} of ${dur ? formatClock(dur) : 'unknown length'}` : 'Nothing loaded');
+
+    // Echo: the play button fills as "Your turn" runs out
+    const main = bar.querySelector('.pm-btn-main');
+    if (s.status === 'gap') {
+      main.style.setProperty('--pm-gap', `${(s.gapProgress * 100).toFixed(1)}%`);
+      const status = bar.querySelector('#pm-status');
+      const text = this.playerStatusText(s);
+      if (status.textContent !== text) status.textContent = text;
+    } else {
+      main.style.removeProperty('--pm-gap');
     }
   }
 
-  async globalIdFor(verseKey) {
-    if (this.globalIds.has(verseKey)) return this.globalIds.get(verseKey);
-    const [surahNum, ayahNum] = verseKey.split(':').map(Number);
-    const ayah = await db.getAyah(surahNum, ayahNum);
-    if (!ayah?.globalId) return null;
-    this.globalIds.set(verseKey, ayah.globalId);
-    return ayah.globalId;
+  // Tap on an ayah number: the loaded ayah pauses or continues (or plays again
+  // after it ended); another ayah plays from its start
+  toggleAyahAudio(verseKey) {
+    const p = this.player;
+    if (p.key === verseKey && p.status !== 'idle') {
+      if (p.isActive) p.pause();
+      else p.play();
+    } else {
+      p.select(verseKey, { play: true });
+    }
   }
 
-  // Tap on an ayah number: play it, or pause / continue it if it's the one loaded
-  async toggleAyahAudio(verseKey) {
-    const globalId = this.globalIds.get(verseKey) ?? await this.globalIdFor(verseKey);
-    if (globalId) audioPlayer.toggle(globalId, verseKey);
+  // --- Fit the page to the screen ---
+
+  // Give the 15 lines the height left between the toolbar and the bottom of
+  // the screen (above the docked player on phones), then make the words
+  // smaller only if a line's height or the widest line needs it.
+  fitPage() {
+    const grid = this.container.querySelector('.mushaf-page-grid');
+    if (!grid || !grid.isConnected || !this.pageData) return;
+    const viewH = document.documentElement.clientHeight || window.innerHeight;
+    const width = grid.getBoundingClientRect().width;
+    if (!viewH || !width) return; // not laid out (a hidden tab)
+
+    // Where the page starts, as if nothing were scrolled
+    let top = grid.getBoundingClientRect().top;
+    for (let el = grid.parentElement; el; el = el.parentElement) top += el.scrollTop || 0;
+
+    // Below it: the docked player (phones) or the content's own padding
+    const bar = this.container.querySelector('#pm-player');
+    const docked = !!bar && getComputedStyle(bar).position === 'fixed';
+    const padBottom = parseFloat(getComputedStyle(this.container).paddingBottom) || 0;
+    const reserve = docked ? bar.getBoundingClientRect().height + 8 : Math.max(12, padBottom);
+
+    const lines = Math.max(1, this.pageData.lines.length);
+    const maxH = Math.round(width * 1.5); // never taller than a mushaf page's proportion
+    const minH = lines * 20 + 20;         // below this the page scrolls instead
+    const h = Math.max(minH, Math.min(maxH, Math.floor(viewH - top - reserve)));
+    grid.style.height = `${h}px`;
+    grid.classList.add('is-fit');
+
+    // Sizes are read right after they change: nothing may be mid-transition
+    grid.classList.add('pm-fitting');
+    try {
+      this.fitWords(grid, h, lines);
+    } finally {
+      grid.classList.remove('pm-measuring', 'pm-fitting');
+    }
+    this.syncLineSliders();
   }
 
-  // Menu "Play" / "Continue": start the ayah, or continue it where it paused
-  async playAyahAudio(verseKey) {
-    const globalId = this.globalIds.get(verseKey) ?? await this.globalIdFor(verseKey);
-    if (globalId) audioPlayer.play(globalId, verseKey);
+  fitWords(grid, h, lines) {
+    // Font: what the stylesheet gives this screen, capped by the line height
+    grid.style.removeProperty('--pm-word-fs');
+    const sample = grid.querySelector('.mushaf-word-box[data-key]');
+    if (!sample) return;
+    const base = parseFloat(getComputedStyle(sample).fontSize) || 18;
+    const gcs = getComputedStyle(grid);
+    const innerH = h - parseFloat(gcs.paddingTop) - parseFloat(gcs.paddingBottom)
+      - parseFloat(gcs.borderTopWidth) - parseFloat(gcs.borderBottomWidth);
+    let fs = Math.min(base, innerH / lines / 1.55);
+    grid.style.setProperty('--pm-word-fs', `${fs.toFixed(2)}px`);
+
+    // ...and by the widest line, measured with every word at its natural width
+    grid.classList.add('pm-measuring');
+    let ratio = 1;
+    grid.querySelectorAll('.mushaf-line').forEach((line) => {
+      if (line.querySelector('.mushaf-surah-header, .mushaf-bismillah')) return;
+      const boxes = line.querySelectorAll('.mushaf-word-box');
+      if (!boxes.length) return;
+      const lcs = getComputedStyle(line);
+      const avail = line.clientWidth - parseFloat(lcs.paddingLeft) - parseFloat(lcs.paddingRight);
+      let words = 0;
+      let fixed = (parseFloat(lcs.columnGap) || 0) * (boxes.length - 1);
+      boxes.forEach((b) => {
+        const bcs = getComputedStyle(b);
+        const w = b.getBoundingClientRect().width;
+        fixed += parseFloat(bcs.marginLeft) + parseFloat(bcs.marginRight);
+        if (b.classList.contains('ayah-end-block')) fixed += w;
+        else words += w;
+      });
+      if (words > 0 && words + fixed > avail) ratio = Math.min(ratio, Math.max(0.3, (avail - fixed) / words));
+    });
+    grid.classList.remove('pm-measuring');
+    if (ratio < 1) {
+      fs = Math.max(10, fs * ratio * 0.985);
+      grid.style.setProperty('--pm-word-fs', `${fs.toFixed(2)}px`);
+    }
+    // Settle the final size while transitions are still off
+    void getComputedStyle(sample).fontSize;
+  }
+
+  // --- Keyboard (while the Page Map is open) ---
+
+  handleKey(e) {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    if (!this.container.querySelector('#pm-player')) return; // the page isn't showing
+    if (e.key === 'Escape') {
+      if (this.closeSheets()) e.preventDefault();
+      return;
+    }
+    const t = e.target;
+    const tag = t?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+    if (document.querySelector('.modal-overlay.active, .modal.active')) return;
+    const p = this.player;
+    switch (e.key) {
+      case ' ':
+      case 'Spacebar':
+        // A focused button or link does its own thing on Space
+        if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return;
+        e.preventDefault();
+        p.toggle();
+        break;
+      case 'ArrowLeft':
+        if (!p.key) return;
+        e.preventDefault();
+        if (e.shiftKey) p.prevAyah();
+        else p.backWord();
+        break;
+      case 'ArrowRight':
+        if (!p.key) return;
+        e.preventDefault();
+        if (e.shiftKey) p.nextAyah();
+        else p.fwdWord();
+        break;
+      case 'r':
+      case 'R':
+        e.preventDefault();
+        p.cycleRepeat();
+        break;
+      default:
+    }
   }
 
   // Index the page's words in reading order and find each ayah's first word on this page.
@@ -575,6 +1035,7 @@ export class PageMapModule {
 
   async loadRepetitionData() {
     this.repHistory = (await db.getProgress('repetition-history')) || {};
+    this.listenHistory = (await db.getProgress(LISTEN_HISTORY_KEY)) || {};
     try {
       this.liveCounts = JSON.parse(localStorage.getItem('repetition-live') || '{}');
     } catch {
@@ -621,6 +1082,79 @@ export class PageMapModule {
 
   getLive(key) {
     return (key && this.liveCounts[key]) || 0;
+  }
+
+  // --- Listened reps (auto-counted: one per pass the player heard to the end) ---
+  // Kept apart from the manual counter: Recited is what you tally, Listened is
+  // what the player counts. Stored per ayah under their own key, so the
+  // existing 'repetition-history' records are never touched.
+
+  listenedToday(verseKey) {
+    return this.listenHistory[`verse-${verseKey}`]?.sessions?.[this._todayStr()] || 0;
+  }
+
+  addListened(verseKey) {
+    if (!verseKey) return;
+    const key = `verse-${verseKey}`;
+    if (!this.listenHistory[key]) {
+      this.listenHistory[key] = { mode: 'verse', label: `Verse ${verseKey}`, sessions: {} };
+    }
+    const today = this._todayStr();
+    const sessions = this.listenHistory[key].sessions;
+    sessions[today] = (sessions[today] || 0) + 1;
+    db.saveProgress(LISTEN_HISTORY_KEY, this.listenHistory);
+
+    this.syncPlayerBar();
+    const chip = this.container.querySelector('#pm-listened');
+    if (chip) {
+      chip.classList.remove('bump');
+      void chip.offsetWidth; // restart the animation
+      chip.classList.add('bump');
+    }
+    this.refreshCounterPanel();
+  }
+
+  // Listened stats summed over a set of ayahs: { total, today, sessions }
+  getListenStats(verseKeys) {
+    const sessions = {};
+    verseKeys.forEach((vk) => {
+      const h = this.listenHistory[`verse-${vk}`];
+      if (!h?.sessions) return;
+      Object.entries(h.sessions).forEach(([date, n]) => {
+        sessions[date] = (sessions[date] || 0) + n;
+      });
+    });
+    const total = Object.values(sessions).reduce((s, n) => s + n, 0);
+    return { total, today: sessions[this._todayStr()] || 0, sessions };
+  }
+
+  // The ayahs a counter target covers (a page target covers every ayah on it)
+  _listenKeysFor(target) {
+    if (!target.valid) return [];
+    if (target.mode === 'page') return this.getOrderedVerseKeys();
+    if (target.mode === 'verse') return [target.key.slice(6)];
+    const [from, to] = target.key.slice(6).split('~');
+    const keys = this.getOrderedVerseKeys();
+    let a = keys.indexOf(from);
+    let b = keys.indexOf(to);
+    if (a === -1 || b === -1) return [];
+    if (a > b) [a, b] = [b, a];
+    return keys.slice(a, b + 1);
+  }
+
+  // The player's "Listened today" chip: point the counter at that ayah and show it
+  openCounterFor(verseKey) {
+    this.counterMode = 'verse';
+    this.counterVerse = verseKey;
+    localStorage.setItem('repetition-mode', 'verse');
+    this.counterOpen = true;
+    localStorage.setItem('pagemap-counter-open', '1');
+    const panel = document.getElementById('pagemap-counter-panel');
+    if (!panel) return;
+    panel.classList.add('open');
+    this.refreshCounterPanel();
+    panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    this._flashCurrentTarget();
   }
 
   // Saved-history stats for a target: grand total, today's committed count, and the raw sessions map.
@@ -759,24 +1293,47 @@ export class PageMapModule {
         </div>`;
     }
 
-    const sessionRows = Object.keys(stats.sessions)
-      .sort((a, b) => b.localeCompare(a))
-      .map(date => `<div class="rep-history-row"><span>${this._formatSessionDate(date)}</span><span class="rep-history-count">${stats.sessions[date]}×</span></div>`)
+    // Listened (counted by the player) next to Recited (tallied here)
+    const listen = this.getListenStats(this._listenKeysFor(t));
+    const headphones = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 15a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z"/><path d="M3 15a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z"/></svg>';
+
+    const dates = [...new Set([...Object.keys(stats.sessions), ...Object.keys(listen.sessions)])]
+      .filter((date) => (stats.sessions[date] || 0) + (listen.sessions[date] || 0) > 0)
+      .sort((a, b) => b.localeCompare(a));
+    const sessionRows = dates
+      .map((date) => {
+        const recited = stats.sessions[date] || 0;
+        const heard = listen.sessions[date] || 0;
+        return `
+          <div class="rep-history-row">
+            <span>${this._formatSessionDate(date)}</span>
+            <span class="rep-history-nums">
+              <span class="rep-history-count" title="Recited">${recited ? `${recited}×` : '–'}</span>
+              <span class="rep-history-listened" title="Listened">${heard ? `${headphones}${heard}` : ''}</span>
+            </span>
+          </div>`;
+      })
       .join('');
 
     const recentRows = this.getPageTargets()
-      .map(e => `
+      .map(e => {
+        const heard = this.getListenStats(this._listenKeysFor({ valid: true, mode: e.mode, key: e.key })).total;
+        return `
         <div class="rep-recent-row ${e.key === t.key ? 'active' : ''}" data-rep-target="${e.key}" title="Click to select and continue counting">
           <span class="rep-recent-label">${e.label}</span>
-          <span class="rep-recent-total">${e.total}×</span>
+          <span class="rep-recent-total" title="Recited">${e.total}×</span>
+          ${heard ? `<span class="rep-recent-listened" title="Listened">${headphones}${heard}</span>` : ''}
           <button class="rep-recent-delete" data-rep-delete="${e.key}" title="Delete saved history for ${e.label}">×</button>
-        </div>`)
+        </div>`;
+      })
       .join('');
 
     const disabled = t.valid ? '' : 'disabled';
     const saveDisabled = (t.valid && live > 0) ? '' : 'disabled';
     // One-line summary for the collapsed header on phones
-    const summary = t.valid ? `${t.label} · ${todayShown} today` : t.label;
+    const summary = t.valid
+      ? `${t.label} · ${todayShown} recited${listen.today ? `, ${listen.today} listened` : ''} today`
+      : t.label;
 
     return `
       <div class="rep-panel-head">
@@ -803,16 +1360,24 @@ export class PageMapModule {
         <div class="rep-count" id="rep-count">${t.valid ? live : '—'}</div>
         <button class="rep-adjust" id="rep-plus" ${disabled} aria-label="Increase">+</button>
       </div>
-      <div class="rep-count-hint">${t.valid ? 'reps this session' : t.label}</div>
+      <div class="rep-count-hint">${t.valid ? 'recited this session' : t.label}</div>
 
       <div class="rep-actions">
         <button class="btn-gold" id="rep-save" ${saveDisabled}>Save</button>
         <button class="btn-outline" id="rep-reset" ${saveDisabled}>Reset</button>
       </div>
 
-      <div class="rep-stats">
-        <span>Today: <strong id="rep-today">${todayShown}</strong></span>
-        <span>Total: <strong id="rep-total">${totalShown}</strong></span>
+      <div class="rep-stats rep-stats-2">
+        <div class="rep-stat-row">
+          <span class="rep-stat-name">Recited</span>
+          <span>Today <strong id="rep-today">${todayShown}</strong></span>
+          <span>Total <strong id="rep-total">${totalShown}</strong></span>
+        </div>
+        <div class="rep-stat-row rep-stat-listened" title="Counted by the player: one for each time an ayah played to its end">
+          <span class="rep-stat-name">${headphones}Listened</span>
+          <span>Today <strong id="rep-listened-today">${t.valid ? listen.today : 0}</strong></span>
+          <span>Total <strong id="rep-listened-total">${t.valid ? listen.total : 0}</strong></span>
+        </div>
       </div>
 
       <div class="rep-history-head">
@@ -823,8 +1388,8 @@ export class PageMapModule {
       </div>
 
       <div class="rep-history-head">
-        <span>History</span>
-        ${stats.total > 0 ? `<button class="rep-clear" id="rep-clear" title="Clear saved history for this target">Clear</button>` : ''}
+        <span>History <span class="rep-history-legend">recited · ${headphones}listened</span></span>
+        ${stats.total > 0 ? `<button class="rep-clear" id="rep-clear" title="Clear the saved recited reps for this target">Clear</button>` : ''}
       </div>
       <div class="rep-history" id="rep-history">
         ${sessionRows || `<div class="rep-history-empty">No saved reps yet</div>`}
@@ -893,7 +1458,7 @@ export class PageMapModule {
     });
     panel.querySelector('#rep-clear')?.addEventListener('click', () => {
       const t = this.getCurrentTarget();
-      if (t.valid && confirm(`Clear all saved repetition history for ${t.label}?`)) {
+      if (t.valid && confirm(`Clear the saved recited reps for ${t.label}? Listened reps are kept.`)) {
         this.clearTargetHistory(t.key);
         this.refreshCounterPanel();
       }
@@ -912,7 +1477,7 @@ export class PageMapModule {
         e.stopPropagation();
         const key = btn.dataset.repDelete;
         const label = this.repHistory[key]?.label || key;
-        if (confirm(`Delete all saved repetition history for ${label}?`)) {
+        if (confirm(`Delete the saved recited reps for ${label}? Listened reps are kept.`)) {
           this.clearTargetHistory(key);
           this.refreshCounterPanel();
         }
@@ -1113,6 +1678,10 @@ export class PageMapModule {
     });
   }
 
+  progressText(revealed, total, pct) {
+    return `Revealed ${revealed} / ${total} · ${pct}%`;
+  }
+
   updateSilhouetteProgress() {
     const total = this.wordSequence.length;
     const revealed = this.revealedWords.size;
@@ -1121,7 +1690,7 @@ export class PageMapModule {
     const bar = document.getElementById('sil-progress-bar');
     if (bar) bar.style.width = `${pct}%`;
     const text = document.getElementById('sil-progress-text');
-    if (text) text.innerText = `Revealed: ${revealed} / ${total} words (${pct}%)`;
+    if (text) text.textContent = this.progressText(revealed, total, pct);
 
     // Refresh the sequential-mode next-word hint
     this.container.querySelectorAll('.mushaf-word-box.next-word-hint').forEach(el => el.classList.remove('next-word-hint'));
@@ -1222,7 +1791,7 @@ export class PageMapModule {
                   data-verse-key="${word.verse_key || ''}"
                   data-position="${word.position || ''}"
                   data-text="${word.text}"
-                  style="font-family: ${fontFamily}; font-size: clamp(1.1rem, 4vw, 1.65rem); line-height: 1; flex-shrink: 1;">
+                  style="font-family: ${fontFamily}; font-size: var(--pm-word-fs, clamp(1.1rem, 4vw, 1.65rem)); line-height: 1; flex-shrink: 1;">
               ${inner}
             </span>
           `;
@@ -1258,21 +1827,21 @@ export class PageMapModule {
           background-color: rgba(212, 175, 55, 0.12) !important;
         }
       </style>
-      <div style="width: 100%; max-width: 700px; margin: 0 auto 14px;">
-        <div class="progress-bar-container" style="margin-bottom: 4px;">
+      <!-- Reveal progress and actions, one row above the page (the how-to text
+           lives in the View sheet, so the page gets the height) -->
+      <div class="pm-progress">
+        <div class="progress-bar-container pm-progress-bar">
           <div id="sil-progress-bar" class="progress-bar" style="width: ${pct}%"></div>
         </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-          <span id="sil-progress-text" style="font-size: 0.85rem; color: var(--text-secondary);">
-            Revealed: ${revealed} / ${total} words (${pct}%)
-          </span>
-          <span style="display: flex; gap: 6px;">
-            <button id="sil-show-all-btn" class="btn-quiet">Show all</button>
-            <button id="sil-hide-all-btn" class="btn-quiet">Hide all</button>
+        <div class="pm-progress-row">
+          <span id="sil-progress-text" class="pm-progress-text">${this.progressText(revealed, total, pct)}</span>
+          <span class="pm-progress-actions">
+            <button type="button" id="sil-reveal-next-btn" class="btn-quiet" ${this.studyMode !== 'sequential' ? 'hidden' : ''}>Reveal next →</button>
+            <button type="button" id="sil-show-all-btn" class="btn-quiet">Show all</button>
+            <button type="button" id="sil-hide-all-btn" class="btn-quiet">Hide all</button>
           </span>
         </div>
       </div>
-      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 12px;">Tap a block to reveal the word, or an ayah number to play its recitation. Long-press (or right-click) a word to mark it, or an ayah number to hide or show the ayah.</p>
       <div class="mushaf-page-container">
         <div class="mushaf-page-grid">
           ${linesHtml}
@@ -1583,8 +2152,18 @@ export class PageMapModule {
     // Repetition counter panel (present whenever the silhouette is rendered)
     this.bindCounterPanel();
 
-    // Ayah audio mini player (shown while an ayah is loaded)
-    this.bindMiniPlayer();
+    // Recitation player bar (always docked while the page shows)
+    this.bindPlayerBar();
+
+    // View sheet: its button, close button and backdrop. The toggles inside it
+    // keep the ids (and handlers) they had in the toolbar.
+    document.getElementById('pagemap-view-btn')?.addEventListener('click', () => {
+      this.setSheet('view', !this.viewOpen);
+    });
+    this.container.querySelectorAll('.pm-view-wrapper [data-sheet-close="view"]').forEach((el) => {
+      el.addEventListener('click', () => this.closeSheets());
+    });
+    this.syncSheets();
 
     // Mushaf edition select event listener
     const editionSelect = document.getElementById('mushaf-edition-select');
@@ -1660,15 +2239,15 @@ export class PageMapModule {
 
       // The audio item follows the player: Pause while this ayah plays,
       // Continue when it's paused part-way, otherwise Play.
-      const s = audioPlayer.getState();
+      const s = this.player.getState();
       const isLoaded = s.key === verseKey && s.status !== 'idle';
-      const isActive = isLoaded && (s.status === 'playing' || s.status === 'loading');
-      const canContinue = isLoaded && s.status === 'paused' && s.currentTime > 0;
+      const isActive = isLoaded && (s.status === 'playing' || s.status === 'loading' || s.status === 'gap');
+      const canContinue = isLoaded && s.status === 'paused' && s.position > 0;
       const audioStyle = 'style="color: var(--accent-gold); font-weight: bold;"';
       const audioItem = isActive
         ? `<button class="context-menu-item" ${audioStyle} data-action="pause-audio" data-value="${verseKey}">❚❚ Pause</button>`
         : `<button class="context-menu-item" ${audioStyle} data-action="play-audio" data-value="${verseKey}">▶ ${canContinue ? 'Continue' : 'Play Ayah Audio'}</button>`;
-      const replayItem = isLoaded && s.status !== 'error' && (s.currentTime > 0 || s.status === 'ended')
+      const replayItem = isLoaded && s.status !== 'error' && (s.position > 0 || s.status === 'ended')
         ? `<button class="context-menu-item" data-action="replay-audio" data-value="${verseKey}">↺ Replay from the start</button>`
         : '';
 
@@ -1797,12 +2376,18 @@ export class PageMapModule {
   }
 
   executeContextMenuAction(action, value, type) {
+    const p = this.player;
     if (action === 'play-audio') {
-      this.playAyahAudio(value);
+      // Continue the loaded ayah where it paused, or start this one
+      if (p.key === value && p.status !== 'idle') p.play();
+      else p.select(value, { play: true });
     } else if (action === 'pause-audio') {
-      if (audioPlayer.currentAyahKey === value) audioPlayer.pause();
+      if (p.key === value) p.pause();
     } else if (action === 'replay-audio') {
-      if (audioPlayer.currentAyahKey === value) audioPlayer.replay();
+      if (p.key === value) {
+        p.seek(0);
+        if (!p.isActive) p.play();
+      }
     } else if (action === 'reveal-verse' || action === 'hide-verse') {
       const words = Array.from(this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${value}"]`));
       this.setRevealedForElements(words, action === 'reveal-verse');
