@@ -468,9 +468,15 @@ export class RecitationQuizModule {
 
     // Play next recitation button handler
     if (this.answered) {
+      // Play / pause / continue (pausing keeps the place). A failure shows on the
+      // button instead of an alert; tapping it again retries.
       document.getElementById('quiz-play-btn')?.addEventListener('click', (e) => {
-        const globalId = parseInt(e.target.dataset.globalId);
-        audioPlayer.playGlobalVerse(globalId, `quiz-${globalId}`);
+        const btn = e.currentTarget;
+        const globalId = parseInt(btn.dataset.globalId);
+        btn.textContent = 'Play Recitation';
+        audioPlayer.playGlobalVerse(globalId, `quiz-${globalId}`, {
+          onError: () => { btn.textContent = 'Couldn’t play. Tap to retry'; },
+        });
       });
     }
 

@@ -1095,6 +1095,295 @@ button {
   background-color: transparent;
 }
 
+/* --- Ayah audio (Page Map) ---
+   A tap on the ayah number plays it. The pseudo-element gives the 16–20px
+   circle a 40px hit area; it is absolutely positioned, so lines don't move. */
+.mushaf-word-box.ayah-end-block::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+}
+
+@media (hover: hover) {
+  .mushaf-word-box.ayah-end-block:hover {
+    background-color: var(--accent-emerald-soft);
+  }
+}
+
+/* Now playing: a filled emerald number with a soft pulse ring */
+.mushaf-word-box.ayah-end-block.playing {
+  background-color: var(--accent-emerald);
+  border-color: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
+  box-shadow: 0 0 0 3px hsla(162, 42%, 24%, 0.22);
+}
+
+.mushaf-word-box.ayah-end-block.playing::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--accent-emerald);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: ayahPlayingPulse 1.6s ease-out infinite;
+}
+
+/* Still buffering: the ring pulses faster */
+.mushaf-word-box.ayah-end-block.playing.loading::after {
+  animation-duration: 0.8s;
+}
+
+/* Loaded in the player but paused (or finished): a ring without the fill */
+.mushaf-word-box.ayah-end-block.paused {
+  border-width: 2px;
+  background-color: hsla(162, 42%, 24%, 0.14);
+  box-shadow: 0 0 0 3px hsla(162, 42%, 24%, 0.16);
+}
+
+@keyframes ayahPlayingPulse {
+  from { transform: scale(1); opacity: 0.7; }
+  to { transform: scale(1.9); opacity: 0; }
+}
+
+/* The playing ayah's words get a light emerald wash. Hidden blocks only change
+   tint, so the drill still shows no letters. */
+.mushaf-word-box.ayah-playing.revealed {
+  background-color: hsla(162, 42%, 24%, 0.1);
+}
+
+.mushaf-word-box.ayah-playing:not(.revealed):not(.partial) {
+  background-color: hsl(152, 24%, 82%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mushaf-word-box.ayah-end-block.playing::after {
+    animation: none;
+    transform: scale(1.35);
+    opacity: 0.45;
+  }
+}
+
+/* Mini player: sits under the page and sticks to the bottom of the view while
+   you scroll (phones: fixed to the screen's bottom edge, see the 900px rule). */
+.pm-player {
+  position: sticky;
+  bottom: 12px;
+  z-index: 6; /* above the line sliders */
+  width: 100%;
+  max-width: 600px;
+  margin: 18px auto 0;
+  padding: 6px 12px 8px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-top: 3px solid var(--accent-emerald);
+  border-radius: var(--border-radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.pm-player[hidden] {
+  display: none;
+}
+
+.pm-player-inner {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.pm-player-seek {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pm-player-time {
+  flex-shrink: 0;
+  min-width: 2.4em;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Seek bar: a native range (tap, drag, keys) with an emerald played part */
+.pm-player-range {
+  --pm-pct: 0%;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: pan-y; /* a sideways drag seeks; an up/down swipe still scrolls */
+}
+
+.pm-player-range:focus-visible {
+  outline: 2px solid var(--accent-gold);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.pm-player-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent-emerald) var(--pm-pct), hsla(35, 30%, 40%, 0.22) var(--pm-pct));
+}
+
+.pm-player-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.pm-player-range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: hsla(35, 30%, 40%, 0.22);
+}
+
+.pm-player-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-emerald);
+}
+
+.pm-player-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* No length yet: the bar is inert until the file's metadata arrives */
+.pm-player.is-loading .pm-player-range {
+  opacity: 0.6;
+}
+
+.pm-player-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pm-player-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pm-player-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pm-player-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.pm-player.is-active .pm-player-status {
+  color: var(--accent-emerald);
+  font-weight: 600;
+}
+
+.pm-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pm-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--accent-emerald);
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.pm-btn:hover {
+  background-color: var(--accent-emerald-soft);
+}
+
+.pm-btn:focus-visible,
+.pm-player-retry:focus-visible {
+  outline: 2px solid var(--accent-gold);
+  outline-offset: 1px;
+}
+
+.pm-btn-main {
+  background-color: var(--accent-emerald);
+  color: hsl(43, 55%, 96%);
+  box-shadow: var(--shadow-sm);
+}
+
+.pm-btn-main:hover {
+  background-color: hsl(162, 42%, 19%);
+}
+
+.pm-btn-main .pm-icon-pause,
+.pm-player.is-active .pm-btn-main .pm-icon-play {
+  display: none;
+}
+
+.pm-player.is-active .pm-btn-main .pm-icon-pause {
+  display: block;
+}
+
+/* Inline error with Retry; it takes the seek bar's place */
+.pm-player-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 0.82rem;
+  color: var(--color-error);
+}
+
+.pm-player-error:empty,
+.pm-player.has-error .pm-player-seek {
+  display: none;
+}
+
+.pm-player-retry {
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--color-error);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-error);
+  background-color: var(--bg-secondary);
+}
+
+.pm-player-retry:hover {
+  background-color: hsla(355, 62%, 40%, 0.08);
+}
+
 /* ============================================
    PAGE MAP - Repetition Counter Panel
    ============================================ */
@@ -1127,6 +1416,11 @@ button {
   font-size: 0.95rem;
   font-weight: 700;
   color: var(--accent-gold);
+}
+
+/* Phones only: the header becomes the open / close button (see the 900px rule) */
+.rep-panel-toggle {
+  display: none;
 }
 
 .rep-mode-tabs {
@@ -1384,7 +1678,8 @@ button {
   padding: 10px 0;
 }
 
-/* Stack the counter panel above the map on narrow screens */
+/* Narrow screens: the page comes first, the counter below it (collapsed until
+   opened), and the mini player is fixed to the bottom of the screen. */
 @media (max-width: 900px) {
   .pagemap-layout {
     flex-direction: column;
@@ -1393,8 +1688,80 @@ button {
   .rep-panel {
     flex: 1 1 auto;
     position: static;
-    order: -1;
     width: 100%;
+    padding: 0;
+  }
+  .rep-panel-head {
+    margin-bottom: 0;
+  }
+  .rep-panel-head > .rep-panel-title {
+    display: none;
+  }
+  .rep-panel-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 48px;
+    padding: 6px 14px;
+    text-align: left;
+    border-radius: var(--border-radius-sm, 8px);
+  }
+  .rep-panel-toggle:focus-visible {
+    outline: 2px solid var(--accent-gold);
+    outline-offset: -2px;
+  }
+  .rep-panel-summary {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rep-panel-chevron {
+    flex-shrink: 0;
+    color: var(--accent-gold);
+    transition: transform var(--transition-fast);
+  }
+  .rep-panel.open .rep-panel-chevron {
+    transform: rotate(180deg);
+  }
+  .rep-panel-body {
+    padding: 4px 14px 14px;
+  }
+  .rep-panel:not(.open) .rep-panel-body {
+    display: none;
+  }
+
+  .pm-player {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 8; /* under the nav drawer and its backdrop */
+    max-width: none;
+    margin: 0;
+    padding: 0 12px calc(6px + env(safe-area-inset-bottom));
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    border-radius: 14px 14px 0 0;
+  }
+  .pm-player-range {
+    height: 40px; /* a taller strip to grab with a thumb */
+  }
+  .pm-player-error {
+    padding-top: 8px;
+  }
+  .pm-player-retry {
+    min-height: 44px;
+  }
+  /* Room at the end of the page so the fixed player never covers it for good */
+  .pagemap-layout.has-player {
+    padding-bottom: var(--pm-player-h, 100px);
   }
 }
 

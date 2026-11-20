@@ -4,10 +4,18 @@
 import { db } from '../data/db.js';
 import { quranLoader } from '../data/loader.js';
 import { audioPlayer } from '../components/audio-player.js';
+import { SURAH_LIST } from '../components/surah-selector.js';
 
 const STORAGE_KEY_LAST_PAGE = 'pagemap-last-page';
 const STORAGE_KEY_HISTORY = 'pagemap-page-history';
 const MAX_HISTORY_ITEMS = 30;
+const BACK_SECONDS = 3; // mini player's back button
+
+// m:ss for the mini player's clock
+function formatClock(seconds) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 // Mistake types a word can be marked with. Warm hues = recitation recall
 // errors, cool hues = knowledge errors. Border style doubles as a
@@ -67,6 +75,28 @@ export class PageMapModule {
     this.counterVerse = null;      // selected verse key (verse mode)
     this.counterGroupFrom = null;  // selected start verse key (group mode)
     this.counterGroupTo = null;    // selected end verse key (group mode)
+    // Phones show the counter below the page, collapsed unless the user opened it
+    this.counterOpen = localStorage.getItem('pagemap-counter-open') === '1';
+
+    // Ayah audio. The shared player holds what is loaded and where; this module
+    // only mirrors it (mini player + ayah highlight), so a re-render never loses it.
+    this.globalIds = new Map(); // verse key -> global ayah number (1–6236), for the audio file
+    this.scrubbing = false;     // the seek bar is being dragged
+    this.playerShown = false;   // an ayah was loaded at the last sync (re-renders don't reset it)
+    this.offPlayerState = audioPlayer.on('state', () => this.syncPlayback());
+    this.offPlayerTime = audioPlayer.on('time', () => this.syncPlayerTime());
+  }
+
+  // Called by the app when it leaves the Page Map
+  destroy() {
+    this.offPlayerState?.();
+    this.offPlayerTime?.();
+    this.closeContextMenu();
+    this.hideWordTooltip();
+    if (this._sliderResizeHandler) {
+      window.removeEventListener('resize', this._sliderResizeHandler);
+      this._sliderResizeHandler = null;
+    }
   }
 
   // --- Page History Helpers ---
@@ -114,6 +144,9 @@ export class PageMapModule {
   async loadPage(pageNumber) {
     this.closeContextMenu();
     this.hideWordTooltip();
+    // The mini player only ever shows an ayah of the page on screen. Reloading
+    // the same page (e.g. another mushaf edition) keeps it playing.
+    if (pageNumber !== this.currentPage) audioPlayer.stop();
     this.currentPage = pageNumber;
     
     // Persist the last opened page and push to history
@@ -157,6 +190,7 @@ export class PageMapModule {
       this.processPageWords();
       this.render();
       this.setupEvents();
+      this.prefetchGlobalIds();
     } catch (e) {
       console.error(e);
       this.container.innerHTML = `
@@ -269,16 +303,246 @@ export class PageMapModule {
         </div>
       </div>
 
-      <!-- Main Display: silhouette (left/center) + repetition counter panel (right) -->
+      <!-- Main Display: silhouette (left/center) + repetition counter panel (right; below the page on phones) -->
       <div class="pagemap-layout">
         <div id="pagemap-content-area" style="display: flex; flex-direction: column; align-items: center; flex: 1 1 auto; min-width: 0;">
           ${this.renderSilhouette()}
+          ${this.renderMiniPlayer()}
         </div>
-        <aside id="pagemap-counter-panel" class="rep-panel">
+        <aside id="pagemap-counter-panel" class="rep-panel ${this.counterOpen ? 'open' : ''}">
           ${this.renderCounterPanelInner()}
         </aside>
       </div>
     `;
+
+    // The page was rebuilt: put back the playing ayah's highlight and the player
+    this.syncPlayback();
+  }
+
+  // --- Ayah audio: mini player + now-playing highlight ---
+
+  renderMiniPlayer() {
+    return `
+      <div class="pm-player" id="pm-player" role="region" aria-label="Ayah audio" hidden>
+        <div class="pm-player-inner">
+          <div class="pm-player-seek">
+            <span class="pm-player-time" id="pm-player-elapsed">0:00</span>
+            <input type="range" class="pm-player-range" id="pm-player-range" min="0" max="0" step="any" value="0" aria-label="Position in the ayah">
+            <span class="pm-player-time" id="pm-player-duration">0:00</span>
+          </div>
+          <div class="pm-player-error" id="pm-player-error" role="alert"></div>
+          <div class="pm-player-row">
+            <div class="pm-player-info">
+              <span class="pm-player-title" id="pm-player-title"></span>
+              <span class="pm-player-status" id="pm-player-status"></span>
+            </div>
+            <div class="pm-player-controls">
+              <button type="button" class="pm-btn" data-pm-act="back" aria-label="Back ${BACK_SECONDS} seconds" title="Back ${BACK_SECONDS} seconds">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8.3"/><path d="M3 3v5.3h5.3"/>
+                  <text x="12.5" y="16" text-anchor="middle" font-size="8.5" font-weight="700" font-family="Inter, sans-serif" fill="currentColor" stroke="none">${BACK_SECONDS}</text>
+                </svg>
+              </button>
+              <button type="button" class="pm-btn pm-btn-main" data-pm-act="toggle" aria-label="Play" title="Play">
+                <svg class="pm-icon-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z"/></svg>
+                <svg class="pm-icon-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4.2" height="14" rx="1.2"/><rect x="13.8" y="5" width="4.2" height="14" rx="1.2"/></svg>
+              </button>
+              <button type="button" class="pm-btn" data-pm-act="replay" aria-label="Replay from the start" title="Replay from the start">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M19 19 9.5 12 19 5z" fill="currentColor"/><line x1="5.5" y1="5" x2="5.5" y2="19"/>
+                </svg>
+              </button>
+              <button type="button" class="pm-btn" data-pm-act="close" aria-label="Close player" title="Close player">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  bindMiniPlayer() {
+    const player = this.container.querySelector('#pm-player');
+    if (!player) return;
+
+    player.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-pm-act]');
+      if (!btn) return;
+      switch (btn.dataset.pmAct) {
+        case 'toggle':
+          if (audioPlayer.isPlaying) audioPlayer.pause();
+          else audioPlayer.play();
+          break;
+        case 'back': audioPlayer.skip(-BACK_SECONDS); break;
+        case 'replay': audioPlayer.replay(); break;
+        case 'close': audioPlayer.stop(); break;
+        case 'retry': audioPlayer.retry(); break;
+      }
+    });
+
+    // Seek bar: tap or drag to seek. While a finger or mouse holds it, time
+    // updates leave the thumb alone so it doesn't jump back under the pointer.
+    const range = player.querySelector('#pm-player-range');
+    const endScrub = () => {
+      if (!this.scrubbing) return;
+      this.scrubbing = false;
+      this.syncPlayerTime();
+    };
+    range.addEventListener('pointerdown', () => {
+      this.scrubbing = true;
+      window.addEventListener('pointerup', endScrub, { once: true });
+      window.addEventListener('pointercancel', endScrub, { once: true });
+    });
+    range.addEventListener('input', () => {
+      audioPlayer.seek(parseFloat(range.value));
+      this.syncPlayerTime();
+    });
+    range.addEventListener('change', endScrub);
+    // Arrow keys move one second in time (Home / End / Page keys stay native)
+    range.addEventListener('keydown', (e) => {
+      const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      audioPlayer.skip(step);
+    });
+  }
+
+  // Mirror the shared player on this page: the playing ayah's highlight and the
+  // mini player. Runs on every player state change and after every render().
+  syncPlayback() {
+    const s = audioPlayer.getState();
+    const loaded = !!s.key && s.status !== 'idle';
+    const active = s.status === 'playing' || s.status === 'loading';
+
+    // Highlight: clear the previous ayah, then mark the loaded one
+    this.container.querySelectorAll('.ayah-end-block.playing, .ayah-end-block.paused').forEach(el => {
+      el.classList.remove('playing', 'paused', 'loading');
+    });
+    this.container.querySelectorAll('.mushaf-word-box.ayah-playing').forEach(el => el.classList.remove('ayah-playing'));
+    let marker = null;
+    if (loaded) {
+      marker = this.container.querySelector(`.ayah-end-block[data-verse-key="${s.key}"]`);
+      if (marker) {
+        marker.classList.add(active ? 'playing' : 'paused');
+        marker.classList.toggle('loading', s.status === 'loading');
+      }
+      if (active) {
+        this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${s.key}"]:not(.ayah-end-block)`)
+          .forEach(el => el.classList.add('ayah-playing'));
+      }
+    }
+
+    // Mini player
+    const appeared = loaded && !this.playerShown;
+    this.playerShown = loaded;
+    const player = this.container.querySelector('#pm-player');
+    const layout = this.container.querySelector('.pagemap-layout');
+    if (!player) return;
+    player.hidden = !loaded;
+    layout?.classList.toggle('has-player', loaded);
+    if (!loaded) return;
+
+    player.classList.toggle('is-active', active);
+    player.classList.toggle('is-loading', s.status === 'loading');
+    player.classList.toggle('has-error', s.status === 'error');
+
+    const [surahNum] = s.key.split(':').map(Number);
+    const surahName = SURAH_LIST.find(x => x.id === surahNum)?.nameEn || 'Surah';
+    player.querySelector('#pm-player-title').textContent = `${surahName} ${s.key}`;
+
+    const statusText = {
+      loading: 'Loading…',
+      playing: 'Playing',
+      paused: 'Paused',
+      ended: 'Finished',
+      error: 'Couldn’t play',
+    }[s.status] || '';
+    player.querySelector('#pm-player-status').textContent = statusText;
+
+    const toggleLabel = active ? 'Pause'
+      : s.status === 'ended' ? 'Play again'
+      : s.status === 'error' ? 'Try again'
+      : s.currentTime > 0 ? 'Continue' : 'Play';
+    const toggleBtn = player.querySelector('[data-pm-act="toggle"]');
+    toggleBtn.setAttribute('aria-label', toggleLabel);
+    toggleBtn.title = toggleLabel;
+
+    // Inline error with Retry (replaces the old alert). Written once per
+    // failure so screen readers announce it once.
+    const errorEl = player.querySelector('#pm-player-error');
+    if (s.status === 'error') {
+      if (!errorEl.firstChild) {
+        errorEl.innerHTML = `
+          <span>Couldn’t load this ayah’s recitation. Check your internet connection.</span>
+          <button type="button" class="pm-player-retry" data-pm-act="retry">Retry</button>
+        `;
+      }
+    } else if (errorEl.firstChild) {
+      errorEl.textContent = '';
+    }
+
+    // Phones: the player is fixed to the bottom, so the page reserves its height
+    // at the end (CSS) and never hides the last lines for good.
+    layout?.style.setProperty('--pm-player-h', `${player.offsetHeight}px`);
+
+    // If the player just appeared over the ayah that was tapped, bring it into
+    // view (only then: a toolbar re-render while it plays never scrolls)
+    if (appeared && marker) {
+      const r = marker.getBoundingClientRect();
+      if (r.bottom > player.getBoundingClientRect().top - 8) {
+        marker.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+
+    this.syncPlayerTime(s);
+  }
+
+  // Seek bar and clock; runs on every time update while an ayah is loaded
+  syncPlayerTime(s = audioPlayer.getState()) {
+    const player = this.container.querySelector('#pm-player');
+    if (!player || player.hidden || !s.key) return;
+    const range = player.querySelector('#pm-player-range');
+    const duration = s.duration;
+    if (!this.scrubbing) {
+      range.max = String(duration || 0);
+      range.value = String(Math.min(s.currentTime, duration || 0));
+    }
+    const shown = this.scrubbing ? parseFloat(range.value) || 0 : s.currentTime;
+    const pct = duration ? Math.min(100, (shown / duration) * 100) : 0;
+    range.style.setProperty('--pm-pct', `${pct}%`);
+    range.setAttribute('aria-valuetext', `${formatClock(shown)} of ${duration ? formatClock(duration) : 'unknown length'}`);
+    player.querySelector('#pm-player-elapsed').textContent = formatClock(shown);
+    player.querySelector('#pm-player-duration').textContent = duration ? formatClock(duration) : '–:––';
+  }
+
+  // Global ayah numbers for every ayah on the page, so a tap can start the
+  // audio straight away (mobile browsers want play() inside the tap)
+  async prefetchGlobalIds() {
+    for (const verseKey of this.getOrderedVerseKeys()) {
+      await this.globalIdFor(verseKey);
+    }
+  }
+
+  async globalIdFor(verseKey) {
+    if (this.globalIds.has(verseKey)) return this.globalIds.get(verseKey);
+    const [surahNum, ayahNum] = verseKey.split(':').map(Number);
+    const ayah = await db.getAyah(surahNum, ayahNum);
+    if (!ayah?.globalId) return null;
+    this.globalIds.set(verseKey, ayah.globalId);
+    return ayah.globalId;
+  }
+
+  // Tap on an ayah number: play it, or pause / continue it if it's the one loaded
+  async toggleAyahAudio(verseKey) {
+    const globalId = this.globalIds.get(verseKey) ?? await this.globalIdFor(verseKey);
+    if (globalId) audioPlayer.toggle(globalId, verseKey);
+  }
+
+  // Menu "Play" / "Continue": start the ayah, or continue it where it paused
+  async playAyahAudio(verseKey) {
+    const globalId = this.globalIds.get(verseKey) ?? await this.globalIdFor(verseKey);
+    if (globalId) audioPlayer.play(globalId, verseKey);
   }
 
   // Index the page's words in reading order and find each ayah's first word on this page.
@@ -511,12 +775,21 @@ export class PageMapModule {
 
     const disabled = t.valid ? '' : 'disabled';
     const saveDisabled = (t.valid && live > 0) ? '' : 'disabled';
+    // One-line summary for the collapsed header on phones
+    const summary = t.valid ? `${t.label} · ${todayShown} today` : t.label;
 
     return `
       <div class="rep-panel-head">
         <span class="rep-panel-title">Repetition Counter</span>
+        <!-- Phones: the header opens and closes the counter (CSS shows one or the other) -->
+        <button type="button" class="rep-panel-toggle" id="rep-panel-toggle" aria-expanded="${this.counterOpen}" aria-controls="rep-panel-body">
+          <span class="rep-panel-title">Repetition Counter</span>
+          <span class="rep-panel-summary">${summary}</span>
+          <svg class="rep-panel-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
       </div>
 
+      <div class="rep-panel-body" id="rep-panel-body">
       <div class="rep-mode-tabs">
         ${tab('verse', 'Verse')}
         ${tab('group', 'Group')}
@@ -556,6 +829,7 @@ export class PageMapModule {
       <div class="rep-history" id="rep-history">
         ${sessionRows || `<div class="rep-history-empty">No saved reps yet</div>`}
       </div>
+      </div>
     `;
   }
 
@@ -569,6 +843,14 @@ export class PageMapModule {
   bindCounterPanel() {
     const panel = document.getElementById('pagemap-counter-panel');
     if (!panel) return;
+
+    // Phones: open / close the counter under the page (remembered on this device)
+    panel.querySelector('#rep-panel-toggle')?.addEventListener('click', (e) => {
+      this.counterOpen = !this.counterOpen;
+      localStorage.setItem('pagemap-counter-open', this.counterOpen ? '1' : '0');
+      panel.classList.toggle('open', this.counterOpen);
+      e.currentTarget.setAttribute('aria-expanded', this.counterOpen);
+    });
 
     panel.querySelectorAll('.rep-mode-tab').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -990,7 +1272,7 @@ export class PageMapModule {
           </span>
         </div>
       </div>
-      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 12px;">Tap blocks to reveal words. Long-press a word to mark it, or an ayah circle for ayah options & audio.</p>
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 12px;">Tap a block to reveal the word, or an ayah number to play its recitation. Long-press (or right-click) a word to mark it, or an ayah number to hide or show the ayah.</p>
       <div class="mushaf-page-container">
         <div class="mushaf-page-grid">
           ${linesHtml}
@@ -1170,13 +1452,9 @@ export class PageMapModule {
         if (!box) return;
 
         if (box.classList.contains('ayah-end-block')) {
-          const verseKey = box.dataset.verseKey;
-          if (verseKey) {
-            const verseWords = Array.from(this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${verseKey}"]`))
-              .filter(w => !w.classList.contains('ayah-end-block'));
-            const allRevealed = verseWords.every(w => w.dataset.key && this.revealedWords.has(w.dataset.key));
-            this.setRevealedForElements(verseWords, !allRevealed);
-          }
+          // The ayah number plays its recitation (tap again to pause / continue).
+          // Hiding and showing the ayah lives in its long-press menu.
+          if (box.dataset.verseKey) this.toggleAyahAudio(box.dataset.verseKey);
         } else if (box.dataset.key) {
           this.setRevealedForElements([box], !this.revealedWords.has(box.dataset.key));
         }
@@ -1305,6 +1583,9 @@ export class PageMapModule {
     // Repetition counter panel (present whenever the silhouette is rendered)
     this.bindCounterPanel();
 
+    // Ayah audio mini player (shown while an ayah is loaded)
+    this.bindMiniPlayer();
+
     // Mushaf edition select event listener
     const editionSelect = document.getElementById('mushaf-edition-select');
     if (editionSelect) {
@@ -1377,8 +1658,23 @@ export class PageMapModule {
       const [surahNum, ayahNum] = verseKey.split(':');
       title = `Ayah ${ayahNum}`;
 
+      // The audio item follows the player: Pause while this ayah plays,
+      // Continue when it's paused part-way, otherwise Play.
+      const s = audioPlayer.getState();
+      const isLoaded = s.key === verseKey && s.status !== 'idle';
+      const isActive = isLoaded && (s.status === 'playing' || s.status === 'loading');
+      const canContinue = isLoaded && s.status === 'paused' && s.currentTime > 0;
+      const audioStyle = 'style="color: var(--accent-gold); font-weight: bold;"';
+      const audioItem = isActive
+        ? `<button class="context-menu-item" ${audioStyle} data-action="pause-audio" data-value="${verseKey}">❚❚ Pause</button>`
+        : `<button class="context-menu-item" ${audioStyle} data-action="play-audio" data-value="${verseKey}">▶ ${canContinue ? 'Continue' : 'Play Ayah Audio'}</button>`;
+      const replayItem = isLoaded && s.status !== 'error' && (s.currentTime > 0 || s.status === 'ended')
+        ? `<button class="context-menu-item" data-action="replay-audio" data-value="${verseKey}">↺ Replay from the start</button>`
+        : '';
+
       optionsHtml = `
-        <button class="context-menu-item" style="color: var(--accent-gold); font-weight: bold;" data-action="play-audio" data-value="${verseKey}">▶ Play Ayah Audio</button>
+        ${audioItem}
+        ${replayItem}
         <button class="context-menu-item" data-action="reveal-verse" data-value="${verseKey}">Unhide Ayah ${ayahNum}</button>
         <button class="context-menu-item" data-action="hide-verse" data-value="${verseKey}">Hide Ayah ${ayahNum}</button>
         <button class="context-menu-item" data-action="reveal-before" data-value="${verseKey}">Unhide Ayahs Before</button>
@@ -1438,18 +1734,24 @@ export class PageMapModule {
       menu.style.top = `10px`;
     }
 
+    // Close on a tap outside or on Esc. closeContextMenu() removes these again.
     const outsideClickListener = (e) => {
-      if (!menu.contains(e.target)) {
-        this.closeContextMenu();
-        document.removeEventListener('mousedown', outsideClickListener);
-        document.removeEventListener('touchstart', outsideClickListener);
-      }
+      if (!menu.contains(e.target)) this.closeContextMenu();
     };
-    
-    setTimeout(() => {
+    const escListener = (e) => {
+      if (e.key === 'Escape') this.closeContextMenu();
+    };
+    document.addEventListener('keydown', escListener);
+    const listenTimer = setTimeout(() => {
       document.addEventListener('mousedown', outsideClickListener);
       document.addEventListener('touchstart', outsideClickListener);
     }, 10);
+    this._menuCleanup = () => {
+      clearTimeout(listenTimer);
+      document.removeEventListener('keydown', escListener);
+      document.removeEventListener('mousedown', outsideClickListener);
+      document.removeEventListener('touchstart', outsideClickListener);
+    };
 
     menu.querySelectorAll('.context-menu-item').forEach(item => {
       item.addEventListener('click', (e) => {
@@ -1462,6 +1764,8 @@ export class PageMapModule {
   }
 
   closeContextMenu() {
+    this._menuCleanup?.();
+    this._menuCleanup = null;
     const existing = document.getElementById('mushaf-context-menu');
     if (existing) {
       existing.remove();
@@ -1492,29 +1796,13 @@ export class PageMapModule {
     return elements;
   }
 
-  async playAyahAudio(verseKey) {
-    const [surahNum, ayahNum] = verseKey.split(':').map(Number);
-    const ayah = await db.getAyah(surahNum, ayahNum);
-    if (!ayah) return;
-
-    audioPlayer.playGlobalVerse(ayah.globalId, verseKey);
-
-    const marker = this.container.querySelector(`.ayah-end-block[data-verse-key="${verseKey}"]`);
-    if (marker) {
-      audioPlayer.onPlay((key) => {
-        if (key === verseKey) marker.classList.add('playing');
-      });
-      const clear = (key) => {
-        if (key === verseKey) marker.classList.remove('playing');
-      };
-      audioPlayer.onEnded(clear);
-      audioPlayer.onPause(clear);
-    }
-  }
-
   executeContextMenuAction(action, value, type) {
     if (action === 'play-audio') {
       this.playAyahAudio(value);
+    } else if (action === 'pause-audio') {
+      if (audioPlayer.currentAyahKey === value) audioPlayer.pause();
+    } else if (action === 'replay-audio') {
+      if (audioPlayer.currentAyahKey === value) audioPlayer.replay();
     } else if (action === 'reveal-verse' || action === 'hide-verse') {
       const words = Array.from(this.container.querySelectorAll(`.mushaf-word-box[data-verse-key="${value}"]`));
       this.setRevealedForElements(words, action === 'reveal-verse');
