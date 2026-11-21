@@ -13,6 +13,11 @@ const API = 'https://api.quran.com/api/v4';
 // quran.com's recitations (GET /resources/recitations), with a short name for
 // the player and the folder of each one's per-ayah files (SSSAAA.mp3). The
 // list itself is fetched at runtime; this table fills in when that fails.
+//
+// Reciters marked `extra` are not on quran.com: they have no word timings
+// (`noTimings`), always play ayah by ayah from their folder, and are kept
+// after quran.com's list. Their ids start at 1001 so they never match a
+// quran.com recitation id.
 const KNOWN_RECITERS = [
   { id: 2, name: 'AbdulBaset AbdulSamad', style: 'Murattal', short: 'Abdul Basit', ayahBase: 'https://verses.quran.com/AbdulBaset/Murattal/mp3/' },
   { id: 1, name: 'AbdulBaset AbdulSamad', style: 'Mujawwad', short: 'Abdul Basit (Mujawwad)', ayahBase: 'https://verses.quran.com/AbdulBaset/Mujawwad/mp3/' },
@@ -26,7 +31,10 @@ const KNOWN_RECITERS = [
   { id: 8, name: 'Mohamed Siddiq al-Minshawi', style: 'Mujawwad', short: 'Al-Minshawi (Mujawwad)', ayahBase: 'https://verses.quran.com/Minshawi/Mujawwad/mp3/' },
   { id: 10, name: 'Sa’ud ash-Shuraym', style: null, short: 'Ash-Shuraym', ayahBase: 'https://verses.quran.com/Shuraym/mp3/' },
   { id: 11, name: 'Mohamed al-Tablawi', style: null, short: 'At-Tablawi', ayahBase: 'https://mirrors.quranicaudio.com/everyayah/Mohammad_al_Tablaway_128kbps/' },
+  { id: 1001, name: 'Ayman Sowaid', style: null, short: 'Ayman Sowaid', ayahBase: 'https://everyayah.com/data/Ayman_Sowaid_64kbps/', extra: true, noTimings: true },
 ];
+
+const EXTRA_RECITERS = KNOWN_RECITERS.filter((r) => r.extra);
 
 export const DEFAULT_RECITER = 7; // Mishari Rashid al-Afasy, as before
 
@@ -48,10 +56,11 @@ export function loadReciters() {
         return res.json();
       })
       .then((json) => {
-        const items = (json.recitations || []).filter((r) => Number.isInteger(r.id));
+        const items = (json.recitations || []).filter((r) => Number.isInteger(r.id)
+          && !EXTRA_RECITERS.some((x) => x.id === r.id));
         if (!items.length) return reciterList;
         reciterList = items.map((r) => {
-          const known = KNOWN_RECITERS.find((k) => k.id === r.id);
+          const known = KNOWN_RECITERS.find((k) => k.id === r.id && !k.extra);
           const name = (r.translated_name?.name || r.reciter_name || known?.name || `Reciter ${r.id}`).replace(/`/g, '’');
           return {
             id: r.id,
@@ -61,6 +70,8 @@ export function loadReciters() {
             ayahBase: known?.ayahBase || null,
           };
         });
+        // Then the built-in reciters quran.com doesn't have
+        reciterList.push(...EXTRA_RECITERS);
         return reciterList;
       })
       .catch((e) => {
@@ -91,11 +102,18 @@ export function reciterLabel(r) {
 // Word times are ms from the ayah's start; from / to are ms in the surah file.
 const chapters = new Map();
 
+// Reciters known to have no word timings anywhere: never ask quran.com
+export function hasNoTimings(reciterId) {
+  return !!reciterInfo(reciterId).noTimings;
+}
+
 export function peekChapter(reciterId, surah) {
+  if (hasNoTimings(reciterId)) return null;
   return chapters.get(`${reciterId}:${surah}`)?.value;
 }
 
 export function loadChapter(reciterId, surah) {
+  if (hasNoTimings(reciterId)) return Promise.resolve(null);
   const key = `${reciterId}:${surah}`;
   const cached = chapters.get(key);
   if (cached) return cached.promise;

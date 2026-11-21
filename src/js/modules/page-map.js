@@ -133,27 +133,11 @@ export class PageMapModule {
       this.syncPlayback();
     });
 
-    // Keyboard, outside taps (sheets), and fitting the page to the screen
+    // Keyboard and outside taps (sheets)
     this.onKeyDown = (e) => this.handleKey(e);
     this.onDocPointerDown = (e) => this.handleOutsidePointer(e);
-    // Fit again once the size settles, and once more a little later: some
-    // phones report a rotation before the new viewport is laid out
-    this.onResize = () => {
-      clearTimeout(this._fitTimer);
-      clearTimeout(this._fitTimerLate);
-      this._fitTimer = setTimeout(() => this.fitPage(), 80);
-      this._fitTimerLate = setTimeout(() => this.fitPage(), 450);
-    };
-    this.onFontsLoaded = () => this.onResize();
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('pointerdown', this.onDocPointerDown, true);
-    window.addEventListener('resize', this.onResize);
-    window.visualViewport?.addEventListener('resize', this.onResize);
-    document.fonts?.addEventListener?.('loadingdone', this.onFontsLoaded);
-    // The docked player can change height (an error line, a font): keep the page clear of it
-    if (typeof ResizeObserver === 'function') {
-      this.playerObserver = new ResizeObserver(() => this.onResize());
-    }
   }
 
   // Called by the app when it leaves the Page Map
@@ -164,12 +148,6 @@ export class PageMapModule {
     this.hideWordTooltip();
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
-    window.removeEventListener('resize', this.onResize);
-    window.visualViewport?.removeEventListener('resize', this.onResize);
-    document.fonts?.removeEventListener?.('loadingdone', this.onFontsLoaded);
-    this.playerObserver?.disconnect();
-    clearTimeout(this._fitTimer);
-    clearTimeout(this._fitTimerLate);
     if (this._sliderResizeHandler) {
       window.removeEventListener('resize', this._sliderResizeHandler);
       this._sliderResizeHandler = null;
@@ -390,10 +368,9 @@ export class PageMapModule {
     `;
 
     // The page was rebuilt: put back the player's state (ayah wash, word
-    // follow, the bar), then fit the 15 lines to the screen
+    // follow, the bar)
     this.ticksFor = null;
     this.syncPlayback();
-    this.fitPage();
     if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   }
 
@@ -576,8 +553,6 @@ export class PageMapModule {
   bindPlayerBar() {
     const bar = this.container.querySelector('#pm-player');
     if (!bar) return;
-    this.playerObserver?.disconnect();
-    this.playerObserver?.observe(bar);
 
     bar.addEventListener('click', (e) => {
       const item = e.target.closest('[data-reciter-id]');
@@ -880,86 +855,6 @@ export class PageMapModule {
     } else {
       p.select(verseKey, { play: true });
     }
-  }
-
-  // --- Fit the page to the screen ---
-
-  // Give the 15 lines the height left between the toolbar and the bottom of
-  // the screen (above the docked player on phones), then make the words
-  // smaller only if a line's height or the widest line needs it.
-  fitPage() {
-    const grid = this.container.querySelector('.mushaf-page-grid');
-    if (!grid || !grid.isConnected || !this.pageData) return;
-    const viewH = document.documentElement.clientHeight || window.innerHeight;
-    const width = grid.getBoundingClientRect().width;
-    if (!viewH || !width) return; // not laid out (a hidden tab)
-
-    // Where the page starts, as if nothing were scrolled
-    let top = grid.getBoundingClientRect().top;
-    for (let el = grid.parentElement; el; el = el.parentElement) top += el.scrollTop || 0;
-
-    // Below it: the docked player (phones) or the content's own padding
-    const bar = this.container.querySelector('#pm-player');
-    const docked = !!bar && getComputedStyle(bar).position === 'fixed';
-    const padBottom = parseFloat(getComputedStyle(this.container).paddingBottom) || 0;
-    const reserve = docked ? bar.getBoundingClientRect().height + 8 : Math.max(12, padBottom);
-
-    const lines = Math.max(1, this.pageData.lines.length);
-    const maxH = Math.round(width * 1.5); // never taller than a mushaf page's proportion
-    const minH = lines * 20 + 20;         // below this the page scrolls instead
-    const h = Math.max(minH, Math.min(maxH, Math.floor(viewH - top - reserve)));
-    grid.style.height = `${h}px`;
-    grid.classList.add('is-fit');
-
-    // Sizes are read right after they change: nothing may be mid-transition
-    grid.classList.add('pm-fitting');
-    try {
-      this.fitWords(grid, h, lines);
-    } finally {
-      grid.classList.remove('pm-measuring', 'pm-fitting');
-    }
-    this.syncLineSliders();
-  }
-
-  fitWords(grid, h, lines) {
-    // Font: what the stylesheet gives this screen, capped by the line height
-    grid.style.removeProperty('--pm-word-fs');
-    const sample = grid.querySelector('.mushaf-word-box[data-key]');
-    if (!sample) return;
-    const base = parseFloat(getComputedStyle(sample).fontSize) || 18;
-    const gcs = getComputedStyle(grid);
-    const innerH = h - parseFloat(gcs.paddingTop) - parseFloat(gcs.paddingBottom)
-      - parseFloat(gcs.borderTopWidth) - parseFloat(gcs.borderBottomWidth);
-    let fs = Math.min(base, innerH / lines / 1.55);
-    grid.style.setProperty('--pm-word-fs', `${fs.toFixed(2)}px`);
-
-    // ...and by the widest line, measured with every word at its natural width
-    grid.classList.add('pm-measuring');
-    let ratio = 1;
-    grid.querySelectorAll('.mushaf-line').forEach((line) => {
-      if (line.querySelector('.mushaf-surah-header, .mushaf-bismillah')) return;
-      const boxes = line.querySelectorAll('.mushaf-word-box');
-      if (!boxes.length) return;
-      const lcs = getComputedStyle(line);
-      const avail = line.clientWidth - parseFloat(lcs.paddingLeft) - parseFloat(lcs.paddingRight);
-      let words = 0;
-      let fixed = (parseFloat(lcs.columnGap) || 0) * (boxes.length - 1);
-      boxes.forEach((b) => {
-        const bcs = getComputedStyle(b);
-        const w = b.getBoundingClientRect().width;
-        fixed += parseFloat(bcs.marginLeft) + parseFloat(bcs.marginRight);
-        if (b.classList.contains('ayah-end-block')) fixed += w;
-        else words += w;
-      });
-      if (words > 0 && words + fixed > avail) ratio = Math.min(ratio, Math.max(0.3, (avail - fixed) / words));
-    });
-    grid.classList.remove('pm-measuring');
-    if (ratio < 1) {
-      fs = Math.max(10, fs * ratio * 0.985);
-      grid.style.setProperty('--pm-word-fs', `${fs.toFixed(2)}px`);
-    }
-    // Settle the final size while transitions are still off
-    void getComputedStyle(sample).fontSize;
   }
 
   // --- Keyboard (while the Page Map is open) ---
@@ -1791,7 +1686,7 @@ export class PageMapModule {
                   data-verse-key="${word.verse_key || ''}"
                   data-position="${word.position || ''}"
                   data-text="${word.text}"
-                  style="font-family: ${fontFamily}; font-size: var(--pm-word-fs, clamp(1.1rem, 4vw, 1.65rem)); line-height: 1; flex-shrink: 1;">
+                  style="font-family: ${fontFamily}; font-size: clamp(1.1rem, 4vw, 1.65rem); line-height: 1; flex-shrink: 1;">
               ${inner}
             </span>
           `;

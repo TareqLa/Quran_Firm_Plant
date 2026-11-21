@@ -1189,21 +1189,6 @@ button {
   box-shadow: 0 0 0 2px var(--accent-emerald);
 }
 
-/* --- Page fitted to the screen (PageMapModule.fitPage) --- */
-.mushaf-page-grid.is-fit {
-  aspect-ratio: auto;
-}
-
-/* While fitting: sizes are read straight away, so nothing may be mid-transition */
-.mushaf-page-grid.pm-fitting .mushaf-word-box {
-  transition: none !important;
-}
-
-/* While measuring each line's natural width */
-.mushaf-page-grid.pm-measuring .mushaf-word-box {
-  flex-shrink: 0 !important;
-}
-
 /* --- Page Map toolbar: one row --- */
 .pm-toolbar {
   display: flex;
@@ -2401,7 +2386,7 @@ button {
   }
 
   /* The player docks to the bottom of the screen, above the safe area; the
-     page is sized to stay clear of it (fitPage) */
+     layout pads its bottom by the player's height so the page scrolls clear */
   .pm-side {
     flex: 1 1 auto;
     position: static;
