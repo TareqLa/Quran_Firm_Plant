@@ -8,6 +8,10 @@ import { db } from './db.js';
 const QURAN_TEXT_URL = 'https://cdn.jsdelivr.net/npm/quran-json@3.1.2/dist/quran_en.json';
 const MUTASHABIHAT_URL = 'https://raw.githubusercontent.com/srmdn/quran-mutashabihat/master/quran-mutashabihat.json'; // fallback if fails
 
+// V1 pages carry readable (Uthmani) word text from this version on; cached
+// pages from before it are fetched again
+const V1_TEXT_VERSION = 2;
+
 // Returns the raw GitHub URL for a page layout JSON
 export function getPageUrl(pageNumber) {
   const paddedPage = String(pageNumber).padStart(3, '0');
@@ -232,9 +236,10 @@ export class QuranLoader {
   async loadPage(pageNumber, edition = 'v2') {
     if (pageNumber < 1 || pageNumber > 604) return null;
     
-    // Check cache
+    // Check cache. V1 pages saved before V1_TEXT_VERSION hold glyph codes as
+    // their words' text: fetch those again, and keep the old copy if that fails.
     const cached = await db.getPage(pageNumber, edition);
-    if (cached) return cached;
+    if (cached && (edition !== 'v1' || cached.textVersion >= V1_TEXT_VERSION)) return cached;
 
     // Fetch layout
     try {
@@ -257,7 +262,7 @@ export class QuranLoader {
       return pageData;
     } catch (e) {
       console.error(e);
-      return null;
+      return cached || null;
     }
   }
 
@@ -334,9 +339,11 @@ export class QuranLoader {
     return map;
   }
 
-  // Fetch V1 page layouts from Quran.com v4 API (using mushaf=2) and normalize
+  // Fetch V1 page layouts from Quran.com v4 API (using mushaf=2) and normalize.
+  // With mushaf=2 a word's `text` is its QCF V1 glyph code (one presentation-
+  // form letter in any other font), so the readable text is text_uthmani.
   async fetchV1Page(pageNumber) {
-    const url = `https://api.quran.com/api/v4/verses/by_page/${pageNumber}?mushaf=2&words=true&word_fields=line_v1,code_v1`;
+    const url = `https://api.quran.com/api/v4/verses/by_page/${pageNumber}?mushaf=2&words=true&word_fields=line_v1,code_v1,text_uthmani`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Failed to fetch V1 page ${pageNumber} from Quran.com API`);
     const data = await res.json();
@@ -345,6 +352,7 @@ export class QuranLoader {
       id: `v1-${pageNumber}`,
       page: pageNumber,
       edition: 'v1',
+      textVersion: V1_TEXT_VERSION,
       font: `p${pageNumber}`,
       surahs: [],
       lines: []
@@ -382,7 +390,7 @@ export class QuranLoader {
           code: word.id,
           char: word.code_v1,
           font: isEnd ? 'QCF_BSML' : `p${pageNumber}`,
-          text: word.text || '',
+          text: word.text_uthmani || '',
           type: isEnd ? 'end' : 'word',
           verse_key: verse.verse_key,
           position: word.position

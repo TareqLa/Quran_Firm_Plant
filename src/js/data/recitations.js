@@ -139,10 +139,18 @@ export function loadChapter(reciterId, surah) {
   return entry.promise;
 }
 
+// No ayah has more words than this (2:282 has 128); a bigger position is junk
+const MAX_WORD_POS = 150;
+
 // Turn quran.com's audio_file into per-ayah ranges and word timings. Returns
 // null when there's no file or no word timings at all (some reciters only have
 // ayah-level timestamps; those play ayah by ayah instead).
-function parseChapter(file) {
+//
+// An ayah's words are in time order, as heard. A position can come more than
+// once: reciters go back and repeat words (Alafasy reads 4:75 as 1…14, 13,
+// 14, 15…23, 22, 23, 24…31). Follow uses that order; the word steps go by
+// position (see the word steps in ayah-player.js).
+export function parseChapter(file) {
   const stamps = Array.isArray(file?.timestamps) ? file.timestamps : [];
   if (!file?.audio_url || !stamps.length) return null;
   if (!stamps.some((t) => Array.isArray(t.segments) && t.segments.length)) return null;
@@ -156,22 +164,23 @@ function parseChapter(file) {
 
     // Segments are [position, startMs, endMs] in the surah file. Some start a
     // little before the ayah does, a word can be split into two segments in a
-    // row, and a few lack an end; clamp, merge and fill those in.
-    const words = [];
+    // row, a few lack an end, and some are only a time with no position;
+    // clamp, merge, fill in and drop those. A word heard wholly outside the
+    // ayah's range (2:260's first word ends before the ayah starts) has no
+    // time in it: clamped, it would sit on the next word's start where no
+    // word step could reach it.
+    let words = [];
     for (const seg of t.segments || []) {
       if (!Array.isArray(seg) || seg.length < 2) continue;
       const pos = Number(seg[0]);
-      const st = Number(seg[1]);
-      const en = seg.length > 2 ? Number(seg[2]) : NaN;
-      if (!Number.isFinite(pos) || !Number.isFinite(st)) continue;
-      const last = words[words.length - 1];
-      if (last && last.pos === pos) {
-        if (Number.isFinite(en)) last.en = Math.max(last.en, en - from);
-        continue;
-      }
-      words.push({ pos, st: st - from, en: Number.isFinite(en) ? en - from : NaN });
+      const st = Number(seg[1]) - from;
+      const en = seg.length > 2 ? Number(seg[2]) - from : NaN;
+      if (!Number.isInteger(pos) || pos < 1 || pos > MAX_WORD_POS || !Number.isFinite(st)) continue;
+      if (st >= dur || (Number.isFinite(en) && en <= 0)) continue;
+      words.push({ pos, st, en: Number.isFinite(en) ? en : NaN });
     }
-    words.sort((a, b) => a.st - b.st);
+    words.sort((a, b) => a.st - b.st); // stable: segments that start together keep their order
+    words = mergeRepeatedSegments(tidyPositions(mergeRepeatedSegments(words)));
     words.forEach((w, i) => {
       w.st = Math.min(Math.max(0, w.st), dur);
       const next = words[i + 1];
@@ -181,6 +190,83 @@ function parseChapter(file) {
     verses.set(t.verse_key, { from, to, words });
   }
   return verses.size ? { audioUrl: file.audio_url, verses } : null;
+}
+
+// One word split into segments in a row becomes one word
+function mergeRepeatedSegments(words) {
+  const out = [];
+  for (const w of words) {
+    const last = out[out.length - 1];
+    if (last && last.pos === w.pos) {
+      if (Number.isFinite(w.en)) last.en = Number.isFinite(last.en) ? Math.max(last.en, w.en) : w.en;
+      continue;
+    }
+    out.push({ ...w });
+  }
+  return out;
+}
+
+// quran.com's aligner sometimes gives a segment the wrong position, often that
+// of the same word elsewhere in the ayah: Alafasy's 4:74 reads 9, 10, 2, 11 and
+// 4:6 reads 17, 18, 12, 10, 20, with 19 missing. Left alone, follow would
+// underline a word lines away and a word step from there would land near it.
+//
+// Real repeats look different: the reciter goes back and reads on, at least
+// to the furthest word read before (4:75: 12, 13, 14, 13, 14, 15). So, taking the words as
+// runs of consecutive positions, a run is mislabelled when it
+//   - goes back and stops short of the furthest word read so far, or
+//   - is a single word that jumps ahead and is followed by an earlier word.
+// Mislabelled words take the positions that are missing at that point, in
+// order (4:6's 12 and 10 become 19), or, when none is missing, join the word
+// before them (4:74's 2 becomes part of 10). Expects the words in time order
+// with a word's neighbouring segments merged; changes positions only.
+export function tidyPositions(words) {
+  if (words.length < 3) return words;
+  const runs = [];
+  for (const w of words) {
+    const run = runs[runs.length - 1];
+    if (run && w.pos === run.end + 1) {
+      run.words.push(w);
+      run.end = w.pos;
+    } else {
+      runs.push({ start: w.pos, end: w.pos, words: [w], stray: false });
+    }
+  }
+  if (runs.length < 2) return words;
+
+  let furthest = runs[0].end;
+  runs.forEach((run, k) => {
+    if (k === 0) return;
+    const next = runs[k + 1];
+    run.stray = run.start <= furthest
+      ? run.end < furthest
+      : run.words.length === 1 && !!next && next.start < run.start;
+    if (!run.stray) furthest = Math.max(furthest, run.end);
+  });
+  if (!runs.some((r) => r.stray)) return words;
+
+  const kept = new Set();
+  runs.forEach((r) => { if (!r.stray) r.words.forEach((w) => kept.add(w.pos)); });
+  furthest = -Infinity;
+  let before = null; // the last kept word
+  for (let k = 0; k < runs.length; k++) {
+    const run = runs[k];
+    if (!run.stray) {
+      furthest = Math.max(furthest, run.end);
+      before = run.words[run.words.length - 1];
+      continue;
+    }
+    let e = k;
+    while (runs[e + 1]?.stray) e++;
+    const nextStart = runs[e + 1] ? runs[e + 1].start : furthest + 1;
+    const missing = [];
+    for (let p = furthest + 1; p < nextStart; p++) if (!kept.has(p)) missing.push(p);
+    runs.slice(k, e + 1).flatMap((r) => r.words).forEach((w, j) => {
+      w.pos = missing.length ? missing[Math.min(j, missing.length - 1)] : before.pos;
+    });
+    k = e;
+  }
+  return words;
 }
 
 // --- Per-ayah files ---

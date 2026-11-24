@@ -228,7 +228,8 @@ export class AyahPlayer {
 
   // --- Commands ---
 
-  // Load an ayah and play it (or leave it paused). pos: ms, 'last-word' or { word: i }.
+  // Load an ayah and play it (or leave it paused). pos: ms, 'last-word' or
+  // { word: position } (the word's first time in the recitation).
   select(key, { play = true, pos = 0 } = {}) {
     if (!key) return;
     this.token++;
@@ -361,7 +362,8 @@ export class AyahPlayer {
     if (next) this.move(next, 0, this.isActive || this.status === 'ended');
   }
 
-  // Start of the current word; within 0.6 s of it, the previous word (into the previous ayah)
+  // Start of the current word; within 0.6 s of it, the word before it in
+  // reading order (from the first word, the previous ayah's last word)
   backWord() {
     if (!this.key || !this.track || this.track.key !== this.key) return;
     const words = this.track.words;
@@ -370,17 +372,12 @@ export class AyahPlayer {
       return;
     }
     if (this.status === 'ended') {
-      this.seek(words[words.length - 1].st); // the selection's last word
+      this.seek(lastWordStart(words)); // the selection's last word
       return;
     }
-    const t = this.position();
-    const i = wordIndexAt(words, t);
-    if (t - words[i].st > BACK_WORD_MS) {
-      this.seek(words[i].st);
-      return;
-    }
-    if (i > 0) {
-      this.seek(words[i - 1].st);
+    const to = backWordTarget(words, this.position());
+    if (to !== 'prev') {
+      this.seek(to);
       return;
     }
     const prev = this.neighbor(-1);
@@ -388,7 +385,7 @@ export class AyahPlayer {
     else this.seek(0);
   }
 
-  // Start of the next word; after the last word, the next ayah
+  // The next word in reading order; after the last word, the next ayah
   fwdWord() {
     if (!this.key || !this.track || this.track.key !== this.key || this.status === 'ended') return;
     const words = this.track.words;
@@ -399,10 +396,9 @@ export class AyahPlayer {
       else this.seek(t + NO_WORDS_STEP_MS);
       return;
     }
-    const i = wordIndexAt(words, t);
-    if (t < words[i].st) this.seek(words[i].st);
-    else if (i < words.length - 1) this.seek(words[i + 1].st);
-    else this.nextAyah();
+    const to = fwdWordTarget(words, t);
+    if (to === 'next') this.nextAyah();
+    else this.seek(to);
   }
 
   setRepeat(n) {
@@ -453,10 +449,12 @@ export class AyahPlayer {
       this.emit('state');
       return;
     }
-    const sameWord = this.track?.words?.length && this.wordIndex >= 0 && this.status !== 'ended';
+    // The same word by position: reciters repeat different words, so the
+    // index in the time-ordered list doesn't carry over
+    const word = this.status !== 'ended' && this.wordIndex >= 0 ? this.track?.words?.[this.wordIndex] : null;
     const play = this.isActive;
     this.track = null;
-    this.select(this.key, { play, pos: sameWord ? { word: this.wordIndex } : 0 });
+    this.select(this.key, { play, pos: word ? { word: word.pos } : 0 });
   }
 
   // Try again after an error
@@ -869,10 +867,79 @@ export function wordIndexAt(words, t) {
   return i;
 }
 
+// --- Word steps ---
+//
+// `words` is in time order, as heard, and a reciter sometimes goes back and
+// repeats words: Alafasy reads 4:75 as 1…14, 13, 14, 15…23, 22, 23, 24…31.
+// Follow uses that order, so the word underlined is the one being recited.
+// The word steps go by reading order instead (word positions): Back is always
+// the word before, Forward the word after, never a later or far-off word.
+// When the target word is heard more than once, a step picks the occurrence
+// nearest to the current one on its own side:
+//   Back:    the latest occurrence that starts before the current word
+//            (from the repeated 13 of 4:75, back to 12; from 15, back to the
+//            repeated 14)
+//   Forward: the first occurrence that starts after the current word
+//            (from the first 14, on to 15, past the repeat)
+// and, if there is none on that side, the nearest one on the other.
+
+// Where Back one word goes from t (ms into the ayah): a time in the ayah, or
+// 'prev' for the previous ayah's last word.
+export function backWordTarget(words, t) {
+  const i = wordIndexAt(words, t);
+  if (i < 0) return 'prev';
+  const cur = words[i];
+  if (t - cur.st > BACK_WORD_MS) return cur.st;
+  // The word before in reading order (a word without timings is skipped)
+  let pos = -Infinity;
+  for (const w of words) if (w.pos < cur.pos && w.pos > pos) pos = w.pos;
+  return pos === -Infinity ? 'prev' : nearestOccurrence(words, pos, i, -1).st;
+}
+
+// Where Forward one word goes from t: a time in the ayah, or 'next' for the
+// next ayah.
+export function fwdWordTarget(words, t) {
+  const i = wordIndexAt(words, t);
+  if (i < 0) return 'next';
+  const cur = words[i];
+  if (t < cur.st) return cur.st; // before the first word starts
+  let pos = Infinity;
+  for (const w of words) if (w.pos > cur.pos && w.pos < pos) pos = w.pos;
+  return pos === Infinity ? 'next' : nearestOccurrence(words, pos, i, 1).st;
+}
+
+// The occurrence of the word at `pos` nearest to index i in direction dir
+// (-1 earlier, 1 later), else the nearest in the other direction
+function nearestOccurrence(words, pos, i, dir) {
+  for (let j = i + dir; j >= 0 && j < words.length; j += dir) if (words[j].pos === pos) return words[j];
+  for (let j = i - dir; j >= 0 && j < words.length; j -= dir) if (words[j].pos === pos) return words[j];
+  return words[i];
+}
+
+// The start of the ayah's last word in reading order, the last time it's heard
+export function lastWordStart(words) {
+  if (!words?.length) return 0;
+  let last = words[0];
+  for (const w of words) if (w.pos >= last.pos) last = w;
+  return last.st;
+}
+
+// Where each word is first heard, in reading order: [{ pos, st }]
+export function firstHearings(words) {
+  const seen = new Map();
+  (words || []).forEach((w) => { if (!seen.has(w.pos)) seen.set(w.pos, w.st); });
+  return [...seen].map(([pos, st]) => ({ pos, st })).sort((a, b) => a.pos - b.pos);
+}
+
 function resolvePos(pos, track) {
   if (typeof pos === 'number') return pos;
   const words = track.words || [];
-  if (pos === 'last-word') return words.length ? words[words.length - 1].st : 0;
-  if (pos && Number.isInteger(pos.word)) return words.length ? words[Math.min(pos.word, words.length - 1)].st : 0;
+  if (!words.length) return 0;
+  if (pos === 'last-word') return lastWordStart(words);
+  if (pos && Number.isInteger(pos.word)) {
+    // The word's first time, or the next word that has a timing
+    const first = firstHearings(words);
+    return (first.find((w) => w.pos >= pos.word) || first[first.length - 1]).st;
+  }
   return 0;
 }

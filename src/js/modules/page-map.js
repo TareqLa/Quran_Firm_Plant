@@ -3,7 +3,7 @@
 
 import { db } from '../data/db.js';
 import { quranLoader } from '../data/loader.js';
-import { AyahPlayer } from '../components/ayah-player.js';
+import { AyahPlayer, firstHearings, lastWordStart } from '../components/ayah-player.js';
 import { loadReciters, reciterInfo, reciterLabel, peekChapter } from '../data/recitations.js';
 import { SURAH_LIST } from '../components/surah-selector.js';
 
@@ -20,6 +20,12 @@ function formatClock(ms) {
 }
 
 const repeatLabel = (n) => (n === Infinity ? '∞' : `×${n}`);
+
+// A word's text for the player bar. A V1 page cached before it carried
+// readable text (and not yet fetched again, e.g. offline) holds QCF glyph
+// codes, which other fonts show as one presentation-form letter: show
+// nothing rather than that.
+const readableWord = (text) => (/^[\u{FB50}-\u{FDFF}\u{FE70}-\u{FEFF}\s]*$/u.test(text || '') ? '' : text);
 
 const escapeHtml = (text) => String(text ?? '').replace(/[&<>"']/g, (ch) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -138,6 +144,9 @@ export class PageMapModule {
     this.onDocPointerDown = (e) => this.handleOutsidePointer(e);
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('pointerdown', this.onDocPointerDown, true);
+    // The bar's word keeps fitting its slot when the screen turns
+    this.onWindowResize = () => this.fitBarWord();
+    window.addEventListener('resize', this.onWindowResize);
   }
 
   // Called by the app when it leaves the Page Map
@@ -148,6 +157,7 @@ export class PageMapModule {
     this.hideWordTooltip();
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+    window.removeEventListener('resize', this.onWindowResize);
     if (this._sliderResizeHandler) {
       window.removeEventListener('resize', this._sliderResizeHandler);
       this._sliderResizeHandler = null;
@@ -630,7 +640,7 @@ export class PageMapModule {
         this.player.seek(0);
       } else if (e.key === 'End' && s.words.length) {
         e.preventDefault();
-        this.player.seek(s.words[s.words.length - 1].st);
+        this.player.seek(lastWordStart(s.words));
       }
     });
   }
@@ -691,13 +701,31 @@ export class PageMapModule {
         text = 'No word timings for this reciter';
         cls = 'is-note';
       } else if (wordEl) {
-        text = wordEl.dataset.text || '';
+        text = readableWord(wordEl.dataset.text);
       }
+      const className = `pm-word ${cls}`;
+      const changed = slot.textContent !== text || slot.className !== className;
       if (slot.textContent !== text) slot.textContent = text;
-      slot.className = `pm-word ${cls}`;
+      slot.className = className;
       slot.setAttribute('lang', cls ? 'en' : 'ar');
       slot.setAttribute('dir', cls ? 'ltr' : 'rtl');
+      if (changed) this.fitBarWord();
     }
+  }
+
+  // The word in the bar is shown whole. Its slot gets the room the title and
+  // the Listened chip leave; a long word next to a long surah name on a narrow
+  // phone gets a smaller font (down to 70%) rather than being cut off.
+  fitBarWord() {
+    const slot = this.container.querySelector('#pm-word');
+    if (!slot) return;
+    slot.style.fontSize = '';
+    if (!slot.textContent || slot.classList.contains('is-turn') || slot.classList.contains('is-note')) return;
+    const room = slot.clientWidth;
+    const need = slot.scrollWidth;
+    if (!room || need <= room) return;
+    const base = parseFloat(getComputedStyle(slot).fontSize);
+    slot.style.fontSize = `${Math.max(base * 0.7, Math.floor((base * room * 10) / need) / 10)}px`;
   }
 
   playerStatusText(s) {
@@ -743,6 +771,8 @@ export class PageMapModule {
     } else {
       chip.hidden = true;
     }
+    // The title, status and chip set the word's room
+    this.fitBarWord();
 
     const btn = (act) => bar.querySelector(`[data-pm-act="${act}"]`);
     btn('prev').disabled = !loaded;
@@ -791,13 +821,14 @@ export class PageMapModule {
       err.textContent = '';
     }
 
-    // A tick for each word on the position bar
+    // A tick for each word on the position bar, once per word: where it's
+    // first heard (a reciter's repeats don't add ticks)
     const ticksKey = loaded && s.duration ? `${s.key}|${s.reciterId}|${s.mode}|${Math.round(s.duration)}` : null;
     if (ticksKey !== this.ticksFor) {
       this.ticksFor = ticksKey;
-      $('#pm-ticks').innerHTML = ticksKey && s.words.length > 1
-        ? s.words.slice(1).map((w) => `<i style="left:${((w.st / s.duration) * 100).toFixed(2)}%"></i>`).join('')
-        : '';
+      const starts = ticksKey ? firstHearings(s.words).slice(1) : [];
+      $('#pm-ticks').innerHTML = starts
+        .map((w) => `<i style="left:${((w.st / s.duration) * 100).toFixed(2)}%"></i>`).join('');
     }
 
     // Phones: the bar is docked, so the page reserves its height at the end
