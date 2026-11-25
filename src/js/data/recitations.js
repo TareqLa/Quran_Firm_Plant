@@ -269,6 +269,182 @@ export function tidyPositions(words) {
   return words;
 }
 
+// --- Parts of an ayah ---
+//
+// A part is a stretch of words in one surah, from its first word to its last
+// ({ key: '4:6', pos: 14 } each). It may run across lines and ayahs: ayahs
+// follow each other in the surah file, so it plays as one window of it.
+
+// Reading order across ayahs: 4:6 word 14 is 6014
+const ORD_STEP = 1000;
+export const wordOrd = (key, pos) => Number(String(key).split(':')[1]) * ORD_STEP + pos;
+
+// Waqf signs, U+06D6–U+06DC (ۖ ۗ ۘ ۙ ۚ ۛ ۜ). In quran.com's text_uthmani a
+// word carries its sign after a space ("أَمْوَٰلَهُمْ ۖ"); in an ayah's whole
+// text it is a token of its own, as are ۞ and ۩, which are not words.
+const WAQF_AFTER_WORD = /\s[\u06D6-\u06DC]/u;
+const WAQF_TOKEN = /^[\u06D6-\u06DC]+$/u;
+const SIGN_TOKEN = /^[\u06D6-\u06ED]+$/u;
+
+export function hasWaqfSign(text) {
+  return WAQF_AFTER_WORD.test(text || '');
+}
+
+// The positions a waqf sign follows, from an ayah's whole Uthmani text (the
+// V2 layout's own word text carries no signs)
+export function waqfPositions(verseText) {
+  const out = [];
+  let pos = 0;
+  for (const tok of String(verseText || '').split(/\s+/)) {
+    if (!tok) continue;
+    if (!SIGN_TOKEN.test(tok)) pos++;
+    else if (WAQF_TOKEN.test(tok) && pos > 0 && out[out.length - 1] !== pos) out.push(pos);
+  }
+  return out;
+}
+
+// Where the reciter stops and goes back: the word read just before he starts
+// again further back (Alafasy reads 4:1 as 1…12, 10…: he stops after 12).
+// words: an ayah's timed words in time order (parseChapter).
+export function reciterStops(words) {
+  const out = new Set();
+  for (let i = 1; i < (words || []).length; i++) {
+    if (words[i].pos <= words[i - 1].pos) out.add(words[i - 1].pos);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+// Where a part can end naturally inside an ayah (rule 4): after a word with a
+// waqf sign, and where the reciter stops. The waqf signs come from the words'
+// Uthmani text ([{ pos, text }]) or else the ayah's whole text; the stops from
+// its timed words. Positions, ascending: { waqf, stops, ends } (ends = both).
+export function naturalEnds({ texts = null, verseText = '', words = [] } = {}) {
+  const waqf = texts
+    ? [...new Set(texts.filter((w) => hasWaqfSign(w.text)).map((w) => w.pos))].sort((a, b) => a - b)
+    : waqfPositions(verseText);
+  const stops = reciterStops(words);
+  const ends = [...new Set([...waqf, ...stops])].sort((a, b) => a - b);
+  return { waqf, stops, ends };
+}
+
+// Rule 2: the window of the surah file that plays a part. A reciter sometimes
+// stops and starts again a few words back. The part plays the first reading
+// that runs through all its words without going back; if no single reading
+// covers it, everything from its first word to its last, as he recited it.
+//
+// chapter: parseChapter's result. Returns null when the part leaves the surah
+// or has no timed words, else { from, to, clean, words }: from / to in ms in
+// the surah file, clean = one reading covers it, and words [{ key, pos, ord,
+// st, en }] in time order (ms from `from`; only the part's own words) for
+// follow and word steps.
+export function partSpan(chapter, first, last) {
+  if (!chapter?.verses || !first?.key || !last?.key) return null;
+  const [s0, a0] = String(first.key).split(':').map(Number);
+  const [s1, a1] = String(last.key).split(':').map(Number);
+  if (s0 !== s1) return null;
+  let o0 = wordOrd(first.key, first.pos);
+  let o1 = wordOrd(last.key, last.pos);
+  if (o1 < o0) [o0, o1] = [o1, o0];
+  const lo = Math.min(a0, a1);
+  const hi = Math.max(a0, a1);
+
+  // Every word as recited, in time order, in surah-file ms
+  const segs = [];
+  for (let a = lo; a <= hi; a++) {
+    const key = `${s0}:${a}`;
+    const v = chapter.verses.get(key);
+    if (!v) return null;
+    v.words.forEach((w) => segs.push({ key, pos: w.pos, ord: wordOrd(key, w.pos), st: v.from + w.st, en: v.from + w.en }));
+  }
+
+  // Readings: runs that go forward word by word (a word without timings may
+  // be skipped). Going back, or jumping over a timed word, starts a new run.
+  const timed = [...new Set(segs.map((x) => x.ord))].sort((a, b) => a - b);
+  const rank = new Map(timed.map((o, i) => [o, i]));
+  const runs = [];
+  let run = null;
+  for (const x of segs) {
+    if (run && x.ord > run.last && rank.get(x.ord) === rank.get(run.last) + 1) {
+      run.segs.push(x);
+      run.last = x.ord;
+    } else {
+      run = { first: x.ord, last: x.ord, segs: [x] };
+      runs.push(run);
+    }
+  }
+
+  const inPart = (x) => x.ord >= o0 && x.ord <= o1;
+  let from;
+  let to;
+  let clean = false;
+  const cover = runs.find((r) => r.first <= o0 && r.last >= o1);
+  if (cover) {
+    const own = cover.segs.filter(inPart);
+    if (own.length) {
+      from = own[0].st;
+      to = own[own.length - 1].en;
+      clean = true;
+    }
+  }
+  if (!clean) {
+    const own = segs.filter(inPart);
+    if (!own.length) return null;
+    from = Math.min(...own.map((x) => x.st));
+    to = Math.max(...own.map((x) => x.en));
+  }
+  if (!(to > from)) return null;
+
+  const dur = to - from;
+  const words = segs
+    .filter((x) => inPart(x) && x.st >= from - 5 && x.st < to - 5)
+    .map((x) => ({
+      key: x.key,
+      pos: x.pos,
+      ord: x.ord,
+      st: Math.min(Math.max(0, x.st - from), dur),
+      en: Math.min(Math.max(0, x.en - from), dur),
+    }));
+  return { from, to, clean, words };
+}
+
+// Rule 4: the part after (dir 1) or before (dir -1) a part. seq: the words in
+// reading order ([{ key, pos }]); part: { i0, i1 }, indexes into seq;
+// endsAfter(i): a natural end follows seq[i]. Next starts at the word after
+// the part and runs to the next natural end or the ayah's last word in seq; if
+// that is more than twice as long as the part, it takes as many words as the
+// part has. Previous does the same backwards. Returns { i0, i1 } or null.
+export function adjacentPart(seq, part, dir, endsAfter = () => false) {
+  if (!seq?.length || !part) return null;
+  const n = part.i1 - part.i0 + 1;
+  const max = n * 2;
+  const ayahBounds = (i) => {
+    let a = i;
+    let b = i;
+    while (a > 0 && seq[a - 1].key === seq[i].key) a--;
+    while (b < seq.length - 1 && seq[b + 1].key === seq[i].key) b++;
+    return [a, b];
+  };
+  const isEnd = (i, last) => i === last || !!endsAfter(i);
+  if (dir > 0) {
+    const s = part.i1 + 1;
+    if (s >= seq.length) return null;
+    const [, last] = ayahBounds(s);
+    let e = s;
+    while (e < last && !isEnd(e, last) && e - s + 1 < max) e++;
+    if (!isEnd(e, last)) e = Math.min(last, s + n - 1);
+    return { i0: s, i1: e };
+  }
+  const e = part.i0 - 1;
+  if (e < 0) return null;
+  const [first, last] = ayahBounds(e);
+  // A part starts at the ayah's first word or just after a natural end
+  const startsAt = (i) => i === first || isEnd(i - 1, last);
+  let s = e;
+  while (s > first && !startsAt(s) && e - s + 1 < max) s--;
+  if (!startsAt(s)) s = Math.max(first, e - n + 1);
+  return { i0: s, i1: e };
+}
+
 // --- Per-ayah files ---
 
 // `${reciterId}:${surah}` -> Map(verseKey -> url), for reciters without a

@@ -1949,6 +1949,171 @@ button {
   }
 }
 
+/* --- Part loops (Page Map) ---
+   A part's words get a highlighter stroke, one per line, drawn under the
+   words by page-map.js (placePartStrokes). Each line is its own stacking
+   context, so the stroke sits above the page and below the words. */
+:root {
+  --hl: hsla(47, 100%, 50%, 0.34);
+  --hl-soft: hsla(47, 100%, 50%, 0.16);
+  --hl-edge: hsl(36, 86%, 36%);
+  --hl-block: hsl(45, 70%, 74%);
+}
+
+.mushaf-line {
+  isolation: isolate;
+}
+
+.pm-part-stroke {
+  position: absolute;
+  top: 16%;
+  bottom: 16%;
+  z-index: -1;
+  border-radius: 0.2em;
+  background-color: var(--hl);
+  pointer-events: none;
+}
+
+/* The part's first word (on the right) and its last (on the left) */
+.pm-part-stroke.cap-s {
+  border-top-right-radius: 0.45em;
+  border-bottom-right-radius: 0.45em;
+  box-shadow: inset -3px 0 0 var(--hl-edge);
+}
+
+.pm-part-stroke.cap-e {
+  border-top-left-radius: 0.45em;
+  border-bottom-left-radius: 0.45em;
+  box-shadow: inset 3px 0 0 var(--hl-edge);
+}
+
+.pm-part-stroke.cap-s.cap-e {
+  box-shadow: inset -3px 0 0 var(--hl-edge), inset 3px 0 0 var(--hl-edge);
+}
+
+/* Choosing with a mouse: the part as it would be */
+.pm-part-stroke.is-preview {
+  background-color: var(--hl-soft);
+  outline: 1.5px dashed var(--hl-edge);
+  outline-offset: -1.5px;
+  box-shadow: none;
+}
+
+/* Hidden words in the part are highlighter-tinted blocks (tap one to peek) */
+.mushaf-word-box.in-part:not(.revealed):not(.partial):not(.word-current) {
+  background-color: var(--hl-block);
+}
+
+/* Choosing: taps pick words, and the first word picked pulses */
+.mushaf-page-grid.is-choosing .mushaf-word-box:not(.ayah-end-block) {
+  cursor: crosshair;
+}
+
+.mushaf-word-box.part-pick {
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 0 0 2px var(--hl-edge);
+  animation: pmPartPick 1.3s ease-in-out infinite;
+}
+
+.mushaf-word-box.part-pick.revealed {
+  background-color: var(--hl);
+}
+
+.mushaf-word-box.part-pick:not(.revealed) {
+  background-color: var(--hl-block);
+}
+
+@keyframes pmPartPick {
+  50% { box-shadow: 0 0 0 4px hsla(36, 86%, 36%, 0.35); }
+}
+
+/* The bar in part mode: the rail and the step labels take the highlighter's
+   colour; Join and Hide get a row of their own */
+.pm-player.is-part .pm-rail {
+  background-color: var(--hl);
+}
+
+/* The part's words and "Part 2 · Playing · 1 of 3" get a little more room */
+.pm-player.is-part .pm-info,
+.pm-player.is-choosing .pm-info {
+  max-width: 60%;
+}
+
+.pm-player.is-part .pm-part-lbl,
+.pm-player.is-choosing .pm-title {
+  color: var(--hl-edge);
+}
+
+.pm-part-lbl:empty {
+  display: none;
+}
+
+.pm-part-chip.on {
+  color: hsl(43, 55%, 96%);
+}
+
+.pm-part-chip.on::before {
+  background-color: var(--hl-edge);
+  border-color: var(--hl-edge);
+}
+
+.pm-chip.is-unavailable,
+.pm-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pm-chip.is-unavailable:hover::before,
+.pm-chip:disabled:hover::before {
+  border-color: var(--border-color);
+}
+
+.pm-part-x {
+  color: var(--text-secondary);
+}
+
+.pm-part-x[hidden],
+.pm-part-tools[hidden] {
+  display: none;
+}
+
+.pm-part-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: -4px;
+}
+
+.pm-hide-icon {
+  display: inline-flex;
+}
+
+/* Narrow phones: slimmer chips, so Part fits beside the reciter's name */
+@media (max-width: 400px) {
+  .pm-opts {
+    gap: 2px;
+  }
+  .pm-opts .pm-chip {
+    padding: 0 7px;
+  }
+}
+
+/* Wide screens: the player card is 320px, so with Part in the row the
+   reciter takes a line of its own rather than shrinking to a few letters */
+@media (min-width: 901px) {
+  .pm-opts {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mushaf-word-box.part-pick {
+    animation: none;
+  }
+}
+
 /* Phones: short labels, so the toolbar stays one row */
 @media (max-width: 640px) {
   .pm-lbl-long {

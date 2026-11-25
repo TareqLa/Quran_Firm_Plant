@@ -4,7 +4,9 @@
 import { db } from '../data/db.js';
 import { quranLoader } from '../data/loader.js';
 import { AyahPlayer, firstHearings, lastWordStart } from '../components/ayah-player.js';
-import { loadReciters, reciterInfo, reciterLabel, peekChapter } from '../data/recitations.js';
+import {
+  loadReciters, reciterInfo, reciterLabel, peekChapter, hasNoTimings, naturalEnds, adjacentPart, wordOrd,
+} from '../data/recitations.js';
 import { SURAH_LIST } from '../components/surah-selector.js';
 
 const STORAGE_KEY_LAST_PAGE = 'pagemap-last-page';
@@ -12,6 +14,10 @@ const STORAGE_KEY_HISTORY = 'pagemap-page-history';
 const MAX_HISTORY_ITEMS = 30;
 // Listened reps (auto-counted by the player), next to the manual 'repetition-history'
 const LISTEN_HISTORY_KEY = 'listening-history';
+// The last part looped in each ayah: { '4:6': { from, to, at } }, by its first ayah
+const PARTS_KEY = 'pagemap-parts';
+const MAX_SAVED_PARTS = 300;
+const NOTE_MS = 4500; // how long a note stays in the bar's word slot
 
 // m:ss for the player's clock (ms in)
 function formatClock(ms) {
@@ -20,6 +26,16 @@ function formatClock(ms) {
 }
 
 const repeatLabel = (n) => (n === Infinity ? '∞' : `×${n}`);
+
+const surahOf = (key) => Number(String(key).split(':')[0]);
+const ordOf = (w) => wordOrd(w.key, w.pos);
+const sameWord = (a, b) => !!a && !!b && a.key === b.key && a.pos === b.pos;
+
+// "4:6 words 14–19", "4:6 word 14", "4:5:12 to 4:6:3"
+function partLabel({ from, to }) {
+  if (from.key !== to.key) return `${from.key}:${from.pos} to ${to.key}:${to.pos}`;
+  return from.pos === to.pos ? `${from.key} word ${from.pos}` : `${from.key} words ${from.pos}–${to.pos}`;
+}
 
 // A word's text for the player bar. A V1 page cached before it carried
 // readable text (and not yet fetched again, e.g. offline) holds QCF glyph
@@ -48,6 +64,10 @@ const ICONS = {
   listened: svg('<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 15a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2z"/><path d="M3 15a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z"/>', { size: 15 }),
   chevron: svg('<path d="m6 9 6 6 6-6"/>', { size: 14 }),
   close: svg('<path d="M6 6l12 12M18 6 6 18"/>', { size: 18 }),
+  part: svg('<path d="M8 4H5v16h3"/><path d="M16 4h3v16h-3"/><path d="M9.5 12h5"/>', { size: 16 }),
+  join: svg('<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><path d="M8 12h8"/>', { size: 16 }),
+  hide: svg('<path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-6.5 0-10-8-10-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M2 2l20 20"/>', { size: 16 }),
+  show: svg('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', { size: 16 }),
   check: svg('<path d="M20 6 9 17l-5-5"/>', { size: 16 }),
   view: svg('<line x1="21" y1="6" x2="14" y2="6"/><line x1="10" y1="6" x2="3" y2="6"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="18" x2="16" y2="18"/><line x1="12" y1="18" x2="3" y2="18"/><line x1="14" y1="4" x2="14" y2="8"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="16" x2="16" y2="20"/>', { size: 16 }),
 };
@@ -118,7 +138,9 @@ export class PageMapModule {
 
     // Recitation player. It holds what is loaded and where; the page (ayah wash,
     // word follow) and the player bar only mirror it, so a re-render never loses it.
-    this.player = new AyahPlayer({ describe: (key) => this.describeAyah(key) });
+    this.player = new AyahPlayer({
+      describe: (key, part) => (part ? `${this.describeAyah(part.from.key).replace(/ \S+$/, '')} ${partLabel(part)}` : this.describeAyah(key)),
+    });
     this.scrubbing = false; // the player's position bar is being dragged
     this.ticksFor = null;   // the track the bar's word ticks were drawn for
     this.offPlayer = [
@@ -127,7 +149,29 @@ export class PageMapModule {
       this.player.on('word', (s) => this.syncFollow(s)),
       this.player.on('time', (s) => this.syncPlayerTime(s)),
       this.player.on('pass', (s) => this.addListened(s.lastPass?.key)),
+      // A part's passes ('partpass') are practice only: not logged
     ];
+
+    // Part loops: Part in the player, then a tap on a part's first and last
+    // word. Next / Previous part step to the words after or before it; the
+    // parts reached that way form a trail, and Join plays the trail from its
+    // first part to the current one as one stretch. The player holds what
+    // plays (player.part); this is how the page got there.
+    //   partPick: choosing the ends, { first: { key, pos } | null }, or null
+    //   part:     { trail: [{ from, to }], ti, joined }, or null
+    this.partPick = null;
+    this.part = null;
+    this.partHover = null;  // the word under the mouse while choosing (a preview)
+    this.partNote = null;   // { text, until }: a short note in the bar's word slot
+    this.partResumeTried = false; // Part was pressed on this page (only the first press resumes)
+    this.pageWords = [];    // the page's words in reading order: [{ key, pos, text }]
+    this.wordAt = new Map(); // 'key:pos' -> index in pageWords
+    this.verseTexts = null; // V2 pages: each ayah's Uthmani text (its waqf signs), once Part is used
+    this.endsCache = new Map();
+    this.savedParts = this.readSavedParts();
+    this.player.partNav = (dir) => this.stepPart(dir);
+    // The part's stroke follows its words when they change size (fonts load)
+    this.partRO = typeof ResizeObserver === 'function' ? new ResizeObserver(() => this.placePartStrokes()) : null;
 
     // Sheets (View options, reciter picker) stay open across re-renders
     this.viewOpen = false;
@@ -145,8 +189,13 @@ export class PageMapModule {
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('pointerdown', this.onDocPointerDown, true);
     // The bar's word keeps fitting its slot when the screen turns
-    this.onWindowResize = () => this.fitBarWord();
+    this.onWindowResize = () => {
+      this.fitBarWord();
+      this.placePartStrokes();
+    };
     window.addEventListener('resize', this.onWindowResize);
+    this.onFontsLoaded = () => this.placePartStrokes();
+    document.fonts?.addEventListener?.('loadingdone', this.onFontsLoaded);
   }
 
   // Called by the app when it leaves the Page Map
@@ -158,6 +207,9 @@ export class PageMapModule {
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     window.removeEventListener('resize', this.onWindowResize);
+    document.fonts?.removeEventListener?.('loadingdone', this.onFontsLoaded);
+    this.partRO?.disconnect();
+    clearTimeout(this.noteTimer);
     if (this._sliderResizeHandler) {
       window.removeEventListener('resize', this._sliderResizeHandler);
       this._sliderResizeHandler = null;
@@ -218,7 +270,13 @@ export class PageMapModule {
     this.hideWordTooltip();
     // The player only ever plays an ayah of the page on screen. Reloading the
     // same page (e.g. another mushaf edition) keeps it playing.
-    if (pageNumber !== this.currentPage) this.player.stop();
+    if (pageNumber !== this.currentPage) {
+      this.player.stop();
+      this.part = null;
+      this.partPick = null;
+      this.partHover = null;
+      this.partResumeTried = false;
+    }
     this.currentPage = pageNumber;
     
     // Persist the last opened page and push to history
@@ -260,6 +318,10 @@ export class PageMapModule {
       }
 
       this.processPageWords();
+      // Waqf signs for Next part (see ensureVerseTexts)
+      this.verseTexts = null;
+      this.endsCache.clear();
+      if (this.part) this.ensureVerseTexts();
       // The player steps through this page's ayahs, and loads their surahs'
       // word timings now so the first tap plays at once
       const verseKeys = this.getOrderedVerseKeys();
@@ -381,6 +443,9 @@ export class PageMapModule {
     // follow, the bar)
     this.ticksFor = null;
     this.syncPlayback();
+    // The part's stroke is drawn on the new page (tajweed and edition too)
+    this.drawPart();
+    document.fonts?.ready?.then(() => this.placePartStrokes());
     if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   }
 
@@ -488,6 +553,7 @@ export class PageMapModule {
           <button type="button" class="pm-chip pm-listened" id="pm-listened" data-pm-act="listened" hidden>
             ${ICONS.listened}<span class="pm-listened-n" id="pm-listened-n">0</span><span class="pm-listened-lbl">today</span>
           </button>
+          <button type="button" class="pm-btn pm-part-x" id="pm-part-x" data-pm-act="part-exit" aria-label="Back to whole ayahs" title="Back to whole ayahs (Esc)" hidden>${ICONS.close}</button>
         </div>
         <div class="pm-track-row">
           <span class="pm-time" id="pm-elapsed">0:00</span>
@@ -500,17 +566,22 @@ export class PageMapModule {
         </div>
         <div class="pm-error" id="pm-error" role="alert"></div>
         <div class="pm-ctl">
-          <button type="button" class="pm-btn" data-pm-act="prev" aria-label="Previous ayah" title="Previous ayah (Shift+←)">${ICONS.prev}</button>
+          <button type="button" class="pm-btn" data-pm-act="prev" aria-label="Previous ayah" title="Previous ayah (Shift+←)">${ICONS.prev}<small class="pm-part-lbl"></small></button>
           <button type="button" class="pm-btn pm-step" data-pm-act="back" aria-label="Back one word" title="Back one word (←)">${ICONS.back}<small>word</small></button>
           <button type="button" class="pm-btn pm-btn-main" data-pm-act="toggle" aria-label="Play" title="Play (Space)">${ICONS.play}${ICONS.pause}${ICONS.spinner}</button>
           <button type="button" class="pm-btn pm-step" data-pm-act="fwd" aria-label="Forward one word" title="Forward one word (→)">${ICONS.fwd}<small>word</small></button>
-          <button type="button" class="pm-btn" data-pm-act="next" aria-label="Next ayah" title="Next ayah (Shift+→)">${ICONS.next}</button>
+          <button type="button" class="pm-btn" data-pm-act="next" aria-label="Next ayah" title="Next ayah (Shift+→)">${ICONS.next}<small class="pm-part-lbl"></small></button>
         </div>
         <div class="pm-opts">
           <button type="button" class="pm-chip" data-pm-act="repeat" id="pm-repeat" title="Repeat the ayah (R)">${ICONS.repeat}<span id="pm-repeat-n">×1</span></button>
           <button type="button" class="pm-chip" data-pm-act="rate" id="pm-rate" title="Speed">1×</button>
           <button type="button" class="pm-chip" data-pm-act="echo" id="pm-echo" aria-pressed="false" title="Echo: after each ayah, a pause as long as the ayah, for you to say it back">${ICONS.echo}<span>Echo</span></button>
+          <button type="button" class="pm-chip pm-part-chip" data-pm-act="part" id="pm-part" aria-pressed="false">${ICONS.part}<span>Part</span></button>
           <button type="button" class="pm-chip pm-reciter" data-pm-act="reciter" id="pm-reciter" aria-haspopup="dialog" aria-expanded="${this.reciterOpen}" aria-controls="pm-reciter-sheet" title="Reciter">${ICONS.reciter}<span class="pm-reciter-name" id="pm-reciter-name"></span>${ICONS.chevron}</button>
+        </div>
+        <div class="pm-part-tools" id="pm-part-tools" role="group" aria-label="Part" hidden>
+          <button type="button" class="pm-chip" data-pm-act="join" id="pm-join" aria-pressed="false">${ICONS.join}<span id="pm-join-lbl">Join</span></button>
+          <button type="button" class="pm-chip" data-pm-act="hide-part" id="pm-hide-part" aria-pressed="false"><span class="pm-hide-icon" id="pm-hide-icon">${ICONS.hide}</span><span id="pm-hide-lbl">Hide</span></button>
         </div>
         ${this.renderReciterSheet()}
       </div>
@@ -582,13 +653,17 @@ export class PageMapModule {
       const p = this.player;
       switch (btn.dataset.pmAct) {
         case 'toggle': p.toggle(); break;
-        case 'prev': p.prevAyah(); break;
-        case 'next': p.nextAyah(); break;
+        case 'prev': if (this.part) this.stepPart(-1); else p.prevAyah(); break;
+        case 'next': if (this.part) this.stepPart(1); else p.nextAyah(); break;
         case 'back': p.backWord(); break;
         case 'fwd': p.fwdWord(); break;
         case 'repeat': p.cycleRepeat(); break;
         case 'rate': p.cycleRate(); break;
         case 'echo': p.setEcho(!p.echo); break;
+        case 'part': this.onPartChip(); break;
+        case 'part-exit': this.exitPart(); break;
+        case 'join': this.toggleJoin(); break;
+        case 'hide-part': this.toggleHidePart(); break;
         case 'retry': p.retry(); break;
         case 'reciter':
           this.refreshReciterSheet();
@@ -647,6 +722,13 @@ export class PageMapModule {
 
   // Mirror the player on this page. Runs on every player change and after every render().
   syncPlayback(s = this.player.getState()) {
+    // The player dropped the part (this reciter has no word timings here, or
+    // the surah file failed): the page goes back to whole ayahs too
+    if (this.part && !s.part && s.key) {
+      this.part = null;
+      this.drawPart();
+      this.showPartNote(this.partsUnavailableNote() || 'This part couldn’t be cut from the recitation, so the whole ayah plays.');
+    }
     this.syncFollow(s);
     this.syncPlayerBar(s);
   }
@@ -659,11 +741,13 @@ export class PageMapModule {
     const loaded = !!s.key && s.status !== 'idle';
     const active = s.status === 'playing' || s.status === 'loading' || s.status === 'gap';
     const washed = loaded && s.status !== 'ended' && s.status !== 'error';
+    // A part has its stroke instead of the ayah's wash and number
+    const inPart = !!s.part;
 
     c.querySelectorAll('.ayah-end-block.playing, .ayah-end-block.paused').forEach((el) => {
       el.classList.remove('playing', 'paused', 'loading');
     });
-    if (loaded) {
+    if (loaded && !inPart) {
       const marker = c.querySelector(`.ayah-end-block[data-verse-key="${s.key}"]`);
       if (marker) {
         marker.classList.add(active ? 'playing' : 'paused');
@@ -671,7 +755,7 @@ export class PageMapModule {
       }
     }
 
-    const washKey = washed ? s.key : null;
+    const washKey = washed && !inPart ? s.key : null;
     c.querySelectorAll('.mushaf-word-box.ayah-playing').forEach((el) => {
       if (el.dataset.verseKey !== washKey) el.classList.remove('ayah-playing');
     });
@@ -681,8 +765,9 @@ export class PageMapModule {
     }
 
     const word = washed && s.status !== 'gap' && s.wordIndex >= 0 ? s.words[s.wordIndex] : null;
+    // A part's words name their ayah (a part may run across ayahs)
     const wordEl = word
-      ? c.querySelector(`.mushaf-word-box[data-verse-key="${s.key}"][data-position="${word.pos}"]:not(.ayah-end-block)`)
+      ? c.querySelector(`.mushaf-word-box[data-verse-key="${word.key || s.key}"][data-position="${word.pos}"]:not(.ayah-end-block)`)
       : null;
     c.querySelectorAll('.mushaf-word-box.word-current').forEach((el) => {
       if (el !== wordEl) el.classList.remove('word-current');
@@ -694,7 +779,15 @@ export class PageMapModule {
     if (slot) {
       let text = '';
       let cls = '';
-      if (s.status === 'gap') {
+      const note = this.partNote && this.partNote.until > Date.now() ? this.partNote.text : '';
+      const picked = this.partPick?.first ? this.wordBox(this.partPick.first) : null;
+      if (note) {
+        text = note;
+        cls = 'is-note';
+      } else if (this.partPick) {
+        // Choosing: the first word picked, so a wrong tap is easy to spot
+        text = picked ? readableWord(picked.dataset.text) : '';
+      } else if (s.status === 'gap') {
         text = 'Your turn: say it back';
         cls = 'is-turn';
       } else if (loaded && s.mode === 'ayah') {
@@ -730,6 +823,12 @@ export class PageMapModule {
 
   playerStatusText(s) {
     if (!s.key || s.status === 'idle') return `Recited by ${reciterInfo(s.reciterId).short}`;
+    // A part: which one leads ("Part 2 · Playing · 1 of 3")
+    const lead = s.part && this.part ? `${this.partName()} · ` : '';
+    return lead + this.statusWord(s);
+  }
+
+  statusWord(s) {
     const of = s.repeat === Infinity ? '∞' : s.repeat;
     const loop = s.repeat !== 1 ? ` · ${s.repeat === Infinity ? s.loop + 1 : Math.min(s.loop + 1, s.repeat)} of ${of}` : '';
     switch (s.status) {
@@ -749,19 +848,34 @@ export class PageMapModule {
     const $ = (sel) => bar.querySelector(sel);
     const loaded = !!s.key && s.status !== 'idle';
     const active = s.status === 'playing' || s.status === 'loading' || s.status === 'gap';
-    bar.classList.toggle('is-idle', !loaded);
+    const inPart = !!(this.part && s.part);
+    const choosing = !!this.partPick;
+    bar.classList.toggle('is-idle', !loaded && !choosing);
     bar.classList.toggle('is-active', active);
     bar.classList.toggle('is-loading', s.status === 'loading');
     bar.classList.toggle('is-gap', s.status === 'gap');
     bar.classList.toggle('has-error', s.status === 'error');
     bar.classList.toggle('no-words', loaded && s.mode === 'ayah');
+    bar.classList.toggle('is-part', inPart);
+    bar.classList.toggle('is-choosing', choosing);
+    if (choosing) {
+      $('#pm-title').textContent = 'Choose a part';
+      $('#pm-status').textContent = this.partPick.first ? 'Now tap its last word' : 'Tap its first word';
+    } else if (inPart) {
+      $('#pm-title').textContent = partLabel(s.part);
+      $('#pm-status').textContent = this.playerStatusText(s);
+    } else {
+      $('#pm-title').textContent = loaded ? this.describeAyah(s.key) : 'Tap an ayah number to listen';
+      $('#pm-status').textContent = this.playerStatusText(s);
+    }
+    $('#pm-part-x').hidden = !inPart && !choosing;
+    $('#pm-part-x').setAttribute('aria-label', choosing ? 'Stop choosing a part' : 'Back to whole ayahs');
+    $('#pm-part-x').title = choosing ? 'Stop choosing (Esc)' : 'Back to whole ayahs (Esc)';
 
-    $('#pm-title').textContent = loaded ? this.describeAyah(s.key) : 'Tap an ayah number to listen';
-    $('#pm-status').textContent = this.playerStatusText(s);
-
-    // Listened today, for the loaded ayah (opens the Repetition Counter)
+    // Listened today, for the loaded ayah (opens the Repetition Counter).
+    // Parts aren't counted, so it steps aside for the part's ✕.
     const chip = $('#pm-listened');
-    if (loaded) {
+    if (loaded && !inPart && !choosing) {
       const n = this.listenedToday(s.key);
       chip.hidden = false;
       $('#pm-listened-n').textContent = String(n);
@@ -775,13 +889,27 @@ export class PageMapModule {
     this.fitBarWord();
 
     const btn = (act) => bar.querySelector(`[data-pm-act="${act}"]`);
-    btn('prev').disabled = !loaded;
-    btn('next').disabled = !loaded || !s.hasNext;
+    // The outer buttons step by part while a part is loaded
+    if (inPart) {
+      btn('prev').disabled = !this.canStepPart(-1);
+      btn('next').disabled = !this.canStepPart(1);
+    } else {
+      btn('prev').disabled = !loaded;
+      btn('next').disabled = !loaded || !s.hasNext;
+    }
+    [['prev', 'Previous', 'Shift+←'], ['next', 'Next', 'Shift+→']].forEach(([act, lbl, keys]) => {
+      const b = btn(act);
+      const what = inPart ? 'part' : 'ayah';
+      b.setAttribute('aria-label', `${lbl} ${what}`);
+      b.title = `${lbl} ${what} (${keys})`;
+      b.classList.toggle('pm-step', inPart);
+      b.querySelector('.pm-part-lbl').textContent = inPart ? 'part' : '';
+    });
     btn('back').disabled = !loaded || !s.mode;
     btn('fwd').disabled = !loaded || !s.mode || s.status === 'ended';
     // Without word timings the word steps move two seconds instead
     const byTime = s.mode === 'ayah';
-    bar.querySelectorAll('.pm-step small').forEach((el) => { el.textContent = byTime ? '2 s' : 'word'; });
+    bar.querySelectorAll('[data-pm-act="back"] small, [data-pm-act="fwd"] small').forEach((el) => { el.textContent = byTime ? '2 s' : 'word'; });
     btn('back').setAttribute('aria-label', byTime ? 'Back 2 seconds' : 'Back one word');
     btn('fwd').setAttribute('aria-label', byTime ? 'Forward 2 seconds' : 'Forward one word');
 
@@ -796,7 +924,9 @@ export class PageMapModule {
     $('#pm-repeat-n').textContent = repeatLabel(s.repeat);
     const rep = $('#pm-repeat');
     rep.classList.toggle('on', s.repeat !== 1);
-    rep.setAttribute('aria-label', s.repeat === 1 ? 'Repeat: once' : s.repeat === Infinity ? 'Repeat: until paused' : `Repeat: ${s.repeat} times`);
+    const what = s.part ? 'the part' : 'the ayah';
+    rep.setAttribute('aria-label', `Repeat ${what}: ${s.repeat === 1 ? 'once' : s.repeat === Infinity ? 'until paused' : `${s.repeat} times`}`);
+    rep.title = `Repeat ${what} (R)`;
     const rate = $('#pm-rate');
     rate.textContent = `${s.rate}×`;
     rate.classList.toggle('on', s.rate !== 1);
@@ -804,6 +934,10 @@ export class PageMapModule {
     const echo = $('#pm-echo');
     echo.classList.toggle('on', s.echo);
     echo.setAttribute('aria-pressed', String(s.echo));
+    echo.title = s.part
+      ? 'Echo: after each pass, a pause as long as the part, for you to say it back'
+      : 'Echo: after each ayah, a pause as long as the ayah, for you to say it back';
+    this.syncPartControls(bar, s);
     const r = reciterInfo(s.reciterId);
     $('#pm-reciter-name').textContent = r.short;
     $('#pm-reciter').setAttribute('aria-label', `Reciter: ${reciterLabel(r)}`);
@@ -823,7 +957,7 @@ export class PageMapModule {
 
     // A tick for each word on the position bar, once per word: where it's
     // first heard (a reciter's repeats don't add ticks)
-    const ticksKey = loaded && s.duration ? `${s.key}|${s.reciterId}|${s.mode}|${Math.round(s.duration)}` : null;
+    const ticksKey = loaded && s.duration ? `${s.key}|${s.reciterId}|${s.mode}|${Math.round(s.duration)}|${s.part ? partLabel(s.part) : ''}` : null;
     if (ticksKey !== this.ticksFor) {
       this.ticksFor = ticksKey;
       const starts = ticksKey ? firstHearings(s.words).slice(1) : [];
@@ -877,15 +1011,459 @@ export class PageMapModule {
   }
 
   // Tap on an ayah number: the loaded ayah pauses or continues (or plays again
-  // after it ended); another ayah plays from its start
+  // after it ended); another ayah plays from its start. It also leaves a part
+  // (or choosing one) for that whole ayah.
   toggleAyahAudio(verseKey) {
     const p = this.player;
-    if (p.key === verseKey && p.status !== 'idle') {
+    if (this.part || this.partPick) this.leavePart();
+    if (p.key === verseKey && p.status !== 'idle' && !p.part) {
       if (p.isActive) p.pause();
       else p.play();
     } else {
       p.select(verseKey, { play: true });
     }
+  }
+
+  // --- Part loops ---
+  //
+  // Part in the player's option row starts choosing: the next two word taps
+  // pick a part's first and last word (in either order, across lines and
+  // ayahs, within one surah) instead of revealing them. The part loops in the
+  // player with Repeat and Echo; the outer buttons become Previous and Next
+  // part, Join plays the parts reached with Next as one stretch, and Hide
+  // turns the part into blocks to recite it from memory. ✕, Esc or a tap on
+  // an ayah number goes back to whole ayahs.
+
+  wordBox(w) {
+    return w
+      ? this.container.querySelector(`.mushaf-word-box[data-verse-key="${w.key}"][data-position="${w.pos}"]:not(.ayah-end-block)`)
+      : null;
+  }
+
+  // A part's first and last word as indexes into pageWords, or null when
+  // they aren't both on this page
+  partIndexes(range) {
+    if (!range) return null;
+    const i0 = this.wordAt.get(`${range.from.key}:${range.from.pos}`);
+    const i1 = this.wordAt.get(`${range.to.key}:${range.to.pos}`);
+    if (i0 == null || i1 == null) return null;
+    return { i0: Math.min(i0, i1), i1: Math.max(i0, i1) };
+  }
+
+  rangeAt({ i0, i1 }) {
+    const a = this.pageWords[i0];
+    const b = this.pageWords[i1];
+    return { from: { key: a.key, pos: a.pos }, to: { key: b.key, pos: b.pos } };
+  }
+
+  // What plays: the current part, or with Join the trail from its first part to it
+  partPlayed() {
+    const p = this.part;
+    if (!p) return null;
+    const cur = p.trail[p.ti];
+    return p.joined ? { from: p.trail[0].from, to: cur.to } : cur;
+  }
+
+  // "Part 2", or with Join "Parts 1–2" (the bar's title names the words)
+  partName() {
+    const p = this.part;
+    const n = p ? p.ti + 1 : 1;
+    return p?.joined ? `Parts 1–${n}` : `Part ${n}`;
+  }
+
+  // Why Part can't be used with this reciter on this page, or '': a part is
+  // cut from the surah file with the word timings
+  partsUnavailableNote() {
+    const id = this.player.reciterId;
+    const surahs = this.pageData ? this.pageSurahs() : [];
+    const all = (test) => surahs.length > 0 && surahs.every(test);
+    if (hasNoTimings(id) || all((s) => peekChapter(id, s) === null)) {
+      return `Parts need word timings, and ${reciterInfo(id).short} has none here. Pick another reciter to use Part.`;
+    }
+    if (all((s) => peekChapter(id, s) === null || this.player.failedFiles.has(`${id}:${s}`))) {
+      return 'The surah recitation didn’t load, so parts can’t play now. Pick another reciter, or reload later.';
+    }
+    return '';
+  }
+
+  // A short note in the bar's word slot
+  showPartNote(text) {
+    this.partNote = { text, until: Date.now() + NOTE_MS };
+    clearTimeout(this.noteTimer);
+    this.noteTimer = setTimeout(() => {
+      this.partNote = null;
+      this.syncFollow();
+    }, NOTE_MS);
+    this.syncFollow();
+  }
+
+  // The Part chip: choose a part (or stop choosing). Its first press on a
+  // page brings back the last part looped there, so an ayah opens where you
+  // stopped; after that it always chooses.
+  onPartChip() {
+    const note = this.partsUnavailableNote();
+    if (note) {
+      this.showPartNote(note);
+      return;
+    }
+    if (this.partPick) {
+      this.stopChoosing();
+      return;
+    }
+    this.ensureVerseTexts();
+    const firstPress = !this.partResumeTried;
+    this.partResumeTried = true;
+    if (!this.part && firstPress) {
+      const saved = this.savedPartToResume();
+      if (saved) {
+        this.setPart(saved, { play: false });
+        this.showPartNote('Your last part here. Press Part again to choose another.');
+        return;
+      }
+    }
+    this.partPick = { first: null };
+    this.partHover = null;
+    this.partNote = null;
+    this.drawPart();
+    this.syncPlayback();
+  }
+
+  stopChoosing() {
+    this.partPick = null;
+    this.partHover = null;
+    this.drawPart();
+    this.syncPlayback();
+  }
+
+  // A word tapped while choosing: the first end, then the last
+  pickPartWord(box) {
+    const w = { key: box.dataset.verseKey, pos: Number(box.dataset.position) };
+    const first = this.partPick.first;
+    if (!first || surahOf(first.key) !== surahOf(w.key)) {
+      // A surah has its own file, so a part can't run on into the next surah
+      if (first) this.showPartNote('A part stays within one surah. Now tap its last word.');
+      this.partPick.first = w;
+      this.partHover = w;
+      this.drawPart();
+      this.syncPlayback();
+      return;
+    }
+    const [a, b] = ordOf(first) <= ordOf(w) ? [first, w] : [w, first];
+    this.partPick = null;
+    this.partHover = null;
+    this.setPart({ from: a, to: b });
+  }
+
+  setPart(range, { play = true } = {}) {
+    this.ensureVerseTexts();
+    this.part = { trail: [{ from: range.from, to: range.to }], ti: 0, joined: false };
+    this.savePart(range);
+    this.playPart(play);
+  }
+
+  playPart(play) {
+    const r = this.partPlayed();
+    if (!r) return;
+    this.partNote = null; // a new part: an old note no longer applies
+    this.drawPart();
+    this.player.selectPart(r.from, r.to, { play });
+  }
+
+  // Waqf signs for Next part: the V1 layout's words carry them; on V2 pages
+  // they come from each ayah's whole text, fetched once Part is used (then
+  // cached on the device)
+  ensureVerseTexts() {
+    if (!this.pageData || this.pageData.edition === 'v1' || this.verseTexts) return;
+    const page = this.currentPage;
+    this.verseTexts = {};
+    quranLoader.loadVerseTexts(page).then((texts) => {
+      if (this.currentPage !== page || this.pageData?.edition === 'v1') return;
+      this.verseTexts = texts || {};
+      this.endsCache.clear();
+      this.syncPlayerBar();
+    });
+  }
+
+  // A natural end follows the page's i-th word: a waqf sign or the reciter's
+  // own stop (rule 4). The ayah's last word is one too (adjacentPart knows).
+  endsAfter(i) {
+    const w = this.pageWords[i];
+    if (!w) return false;
+    const id = this.player.reciterId;
+    const chapter = peekChapter(id, surahOf(w.key));
+    const cacheKey = `${id}|${w.key}|${chapter ? 1 : 0}`;
+    let ends = this.endsCache.get(cacheKey);
+    if (!ends) {
+      const v1 = this.pageData?.edition === 'v1';
+      ends = new Set(naturalEnds({
+        texts: v1 ? this.pageWords.filter((x) => x.key === w.key) : null,
+        verseText: v1 ? '' : this.verseTexts?.[w.key] || '',
+        words: chapter?.verses.get(w.key)?.words || [],
+      }).ends);
+      this.endsCache.set(cacheKey, ends);
+    }
+    return ends.has(w.pos);
+  }
+
+  // The part after (1) or before (-1) the current one
+  adjacentToPart(dir) {
+    const p = this.part;
+    const cur = p && this.partIndexes(p.trail[p.ti]);
+    const n = cur && adjacentPart(this.pageWords, cur, dir, (i) => this.endsAfter(i));
+    return n ? this.rangeAt(n) : null;
+  }
+
+  canStepPart(dir) {
+    if (!this.part) return false;
+    if (dir < 0 && this.part.ti > 0) return true;
+    return !!this.adjacentToPart(dir);
+  }
+
+  // Previous / Next part. Next adds to the trail that Join plays; Previous
+  // goes back along it, then before it.
+  stepPart(dir) {
+    const p = this.part;
+    if (!p) return;
+    const play = this.player.isActive || this.player.status === 'ended';
+    if (dir < 0 && p.ti > 0) {
+      p.ti--;
+    } else {
+      const range = this.adjacentToPart(dir);
+      if (!range) return;
+      if (surahOf(range.from.key) !== surahOf(p.trail[0].from.key)) {
+        p.trail = [range]; // into the next surah: a new trail (Join can't cross files)
+        p.ti = 0;
+      } else if (dir > 0) {
+        p.trail = p.trail.slice(0, p.ti + 1).concat([range]);
+        p.ti++;
+      } else {
+        p.trail = [range].concat(p.trail);
+      }
+    }
+    p.joined = false;
+    this.savePart(p.trail[p.ti]);
+    this.playPart(play);
+  }
+
+  // Join: the trail from its first part to the current one, as one stretch;
+  // again for the current part alone
+  toggleJoin() {
+    const p = this.part;
+    if (!p || p.ti === 0) return;
+    p.joined = !p.joined;
+    this.playPart(true);
+  }
+
+  // The played stretch's word boxes on the page
+  partWordEls() {
+    const ix = this.partIndexes(this.partPlayed());
+    const out = [];
+    if (ix) {
+      for (let i = ix.i0; i <= ix.i1; i++) {
+        const el = this.wordBox(this.pageWords[i]);
+        if (el) out.push(el);
+      }
+    }
+    return out;
+  }
+
+  partAllHidden(els = this.partWordEls()) {
+    return els.length > 0 && els.every((el) => !this.revealedWords.has(el.dataset.key));
+  }
+
+  // Hide: the part's words become blocks (a tap on one peeks); Show reveals them
+  toggleHidePart() {
+    const els = this.partWordEls();
+    if (!els.length) return;
+    this.setRevealedForElements(els, this.partAllHidden(els));
+    this.syncPlayerBar();
+  }
+
+  // Back to whole ayahs on the page; the caller sees to the player
+  leavePart() {
+    this.part = null;
+    this.partPick = null;
+    this.partHover = null;
+    this.partNote = null;
+    this.drawPart();
+  }
+
+  // ✕ and Esc: stop choosing; else leave the part for its first ayah, paused
+  exitPart() {
+    if (this.partPick) {
+      this.stopChoosing();
+      return;
+    }
+    const r = this.partPlayed();
+    this.leavePart();
+    if (r) this.player.select(r.from.key, { play: false });
+    this.syncPlayback();
+  }
+
+  // --- Saved parts (the last part per ayah, on this device) ---
+
+  readSavedParts() {
+    try {
+      const v = JSON.parse(localStorage.getItem(PARTS_KEY) || '{}');
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  }
+
+  savePart(range) {
+    if (!range?.from || !range?.to) return;
+    this.savedParts[range.from.key] = { from: range.from, to: range.to, at: Date.now() };
+    const keys = Object.keys(this.savedParts);
+    if (keys.length > MAX_SAVED_PARTS) {
+      keys.sort((a, b) => (this.savedParts[a].at || 0) - (this.savedParts[b].at || 0))
+        .slice(0, keys.length - MAX_SAVED_PARTS)
+        .forEach((k) => delete this.savedParts[k]);
+    }
+    try {
+      localStorage.setItem(PARTS_KEY, JSON.stringify(this.savedParts));
+    } catch {
+      // storage full or blocked
+    }
+  }
+
+  // The part to bring back on Part: the loaded ayah's last part, or with
+  // nothing loaded the latest one on this page
+  savedPartToResume() {
+    const p = this.player;
+    const usable = (r) => (r?.from && r?.to && this.partIndexes(r) ? r : null);
+    if (p.key && p.status !== 'idle') return p.part ? null : usable(this.savedParts[p.key]);
+    let best = null;
+    this.getOrderedVerseKeys().forEach((k) => {
+      const r = usable(this.savedParts[k]);
+      if (r && (!best || (r.at || 0) > (best.at || 0))) best = r;
+    });
+    return best;
+  }
+
+  // --- The part on the page ---
+
+  // The highlighter stroke under the part, the word picked first and, with a
+  // mouse, a preview while choosing. Drawn again after every render().
+  drawPart() {
+    const grid = this.container.querySelector('.mushaf-page-grid');
+    if (!grid) return;
+    grid.classList.toggle('is-choosing', !!this.partPick);
+    grid.querySelectorAll('.mushaf-word-box.in-part, .mushaf-word-box.part-pick').forEach((el) => {
+      el.classList.remove('in-part', 'part-pick');
+    });
+    const boxes = (ix) => {
+      const out = [];
+      if (ix) {
+        for (let i = ix.i0; i <= ix.i1; i++) {
+          const el = this.wordBox(this.pageWords[i]);
+          if (el) out.push(el);
+        }
+      }
+      return out;
+    };
+    const part = boxes(this.partIndexes(this.partPlayed()));
+    part.forEach((el) => el.classList.add('in-part'));
+    const first = this.partPick?.first;
+    let preview = [];
+    if (first) {
+      this.wordBox(first)?.classList.add('part-pick');
+      const hover = this.partHover && surahOf(this.partHover.key) === surahOf(first.key) ? this.partHover : first;
+      preview = boxes(this.partIndexes({ from: first, to: hover }));
+    }
+    this.partStrokes = { part, preview };
+    if (this.partRO) {
+      this.partRO.disconnect();
+      if (part.length || preview.length) {
+        this.partRO.observe(grid);
+        [...part, ...preview].forEach((el) => this.partRO.observe(el));
+      }
+    }
+    this.placePartStrokes();
+  }
+
+  // One stroke per line, from the part's rightmost word on it to its leftmost
+  placePartStrokes() {
+    const grid = this.container.querySelector('.mushaf-page-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.pm-part-stroke').forEach((el) => el.remove());
+    const { part = [], preview = [] } = this.partStrokes || {};
+    const draw = (els, cls) => {
+      const byLine = new Map();
+      els.forEach((el, k) => {
+        const line = el.isConnected ? el.closest('.mushaf-line') : null;
+        if (!line) return;
+        const L = el.offsetLeft;
+        const R = L + el.offsetWidth;
+        const cur = byLine.get(line);
+        if (!cur) {
+          byLine.set(line, { L, R, s: k === 0, e: k === els.length - 1 });
+        } else {
+          cur.L = Math.min(cur.L, L);
+          cur.R = Math.max(cur.R, R);
+          if (k === els.length - 1) cur.e = true;
+        }
+      });
+      byLine.forEach((r, line) => {
+        if (r.R <= r.L) return;
+        const d = document.createElement('i');
+        d.className = `pm-part-stroke${cls}${r.s ? ' cap-s' : ''}${r.e ? ' cap-e' : ''}`;
+        d.setAttribute('aria-hidden', 'true');
+        d.style.left = `${r.L - 2}px`;
+        d.style.width = `${r.R - r.L + 4}px`;
+        line.appendChild(d);
+      });
+    };
+    draw(part, '');
+    if (this.partPick) draw(preview, ' is-preview');
+  }
+
+  // The Part chip, and Join and Hide while a part is loaded
+  syncPartControls(bar, s) {
+    const $ = (sel) => bar.querySelector(sel);
+    const inPart = !!(this.part && s.part);
+    const unavailable = this.partsUnavailableNote();
+    const chip = $('#pm-part');
+    chip.classList.toggle('on', !!this.partPick);
+    chip.classList.toggle('is-unavailable', !!unavailable);
+    chip.setAttribute('aria-pressed', String(!!this.partPick));
+    chip.setAttribute('aria-disabled', String(!!unavailable));
+    const label = unavailable
+      || (this.partPick ? 'Stop choosing a part'
+        : inPart ? 'Choose another part: tap its first and its last word'
+          : 'Part: tap the first and the last word of a stretch to loop it');
+    chip.setAttribute('aria-label', label);
+    chip.title = label;
+
+    const tools = $('#pm-part-tools');
+    tools.hidden = !inPart;
+    if (!inPart) return;
+    const p = this.part;
+    const n = p.ti + 1;
+    const join = $('#pm-join');
+    join.disabled = p.ti === 0;
+    join.classList.toggle('on', p.joined);
+    join.setAttribute('aria-pressed', String(p.joined));
+    $('#pm-join-lbl').textContent = p.joined ? `1–${n}` : 'Join';
+    const joinLabel = p.joined ? `Playing parts 1 to ${n} together. Tap for part ${n} alone`
+      : p.ti > 0 ? `Join: play parts 1 to ${n} together`
+        : 'Join: after Next part, play the parts together';
+    join.setAttribute('aria-label', joinLabel);
+    join.title = joinLabel;
+
+    const hidden = this.partAllHidden();
+    const hide = $('#pm-hide-part');
+    hide.classList.toggle('on', hidden);
+    hide.setAttribute('aria-pressed', String(hidden));
+    $('#pm-hide-lbl').textContent = hidden ? 'Show' : 'Hide';
+    const icon = $('#pm-hide-icon');
+    if (icon.dataset.state !== String(hidden)) {
+      icon.innerHTML = hidden ? ICONS.show : ICONS.hide;
+      icon.dataset.state = String(hidden);
+    }
+    const hideLabel = hidden ? 'Show the part’s words again' : 'Hide the part, to recite it from memory. Tap a block to peek';
+    hide.setAttribute('aria-label', hideLabel);
+    hide.title = hideLabel;
   }
 
   // --- Keyboard (while the Page Map is open) ---
@@ -895,6 +1473,10 @@ export class PageMapModule {
     if (!this.container.querySelector('#pm-player')) return; // the page isn't showing
     if (e.key === 'Escape') {
       if (this.closeSheets()) e.preventDefault();
+      else if (this.partPick || this.part) {
+        e.preventDefault();
+        this.exitPart();
+      }
       return;
     }
     const t = e.target;
@@ -913,14 +1495,18 @@ export class PageMapModule {
       case 'ArrowLeft':
         if (!p.key) return;
         e.preventDefault();
-        if (e.shiftKey) p.prevAyah();
-        else p.backWord();
+        if (e.shiftKey) {
+          if (this.part) this.stepPart(-1);
+          else p.prevAyah();
+        } else p.backWord();
         break;
       case 'ArrowRight':
         if (!p.key) return;
         e.preventDefault();
-        if (e.shiftKey) p.nextAyah();
-        else p.fwdWord();
+        if (e.shiftKey) {
+          if (this.part) this.stepPart(1);
+          else p.nextAyah();
+        } else p.fwdWord();
         break;
       case 'r':
       case 'R':
@@ -935,6 +1521,8 @@ export class PageMapModule {
   processPageWords() {
     this.wordSequence = [];
     this.firstWordAnchors = new Set();
+    this.pageWords = [];
+    this.wordAt = new Map();
     const seenVerses = new Set();
 
     this.pageData.lines.forEach(lineObj => {
@@ -942,6 +1530,10 @@ export class PageMapModule {
         if (word.type !== 'word') return;
         const key = `silhouette-${this.currentPage}-${lineObj.line}-${idx}`;
         this.wordSequence.push(key);
+        if (word.verse_key && word.position) {
+          this.wordAt.set(`${word.verse_key}:${word.position}`, this.pageWords.length);
+          this.pageWords.push({ key: word.verse_key, pos: Number(word.position), text: word.text || '' });
+        }
         if (word.verse_key && !seenVerses.has(word.verse_key)) {
           seenVerses.add(word.verse_key);
           this.firstWordAnchors.add(key);
@@ -1618,6 +2210,10 @@ export class PageMapModule {
     const text = document.getElementById('sil-progress-text');
     if (text) text.textContent = this.progressText(revealed, total, pct);
 
+    // A peek, Show all or a slider can change what the part's Hide chip says
+    const playerBar = this.container.querySelector('#pm-player');
+    if (playerBar && this.part) this.syncPartControls(playerBar, this.player.getState());
+
     // Refresh the sequential-mode next-word hint
     this.container.querySelectorAll('.mushaf-word-box.next-word-hint').forEach(el => el.classList.remove('next-word-hint'));
     if (this.studyMode === 'sequential') {
@@ -1918,6 +2514,15 @@ export class PageMapModule {
       
       // Hover tooltip: show the English word-by-word gloss for a displayed (revealed) word
       grid.addEventListener('mouseover', (e) => {
+        // Choosing with a mouse: the part previews from the first word to this one
+        if (this.partPick?.first) {
+          const w = e.target.closest('.mushaf-word-box[data-position]:not(.ayah-end-block)');
+          const next = w ? { key: w.dataset.verseKey, pos: Number(w.dataset.position) } : null;
+          if (!sameWord(next, this.partHover)) {
+            this.partHover = next;
+            this.drawPart();
+          }
+        }
         const box = e.target.closest('.mushaf-word-box');
         if (!box || box.classList.contains('ayah-end-block') || !box.classList.contains('revealed')) return;
         this.showWordTooltip(box);
@@ -1950,6 +2555,9 @@ export class PageMapModule {
           // The ayah number plays its recitation (tap again to pause / continue).
           // Hiding and showing the ayah lives in its long-press menu.
           if (box.dataset.verseKey) this.toggleAyahAudio(box.dataset.verseKey);
+        } else if (this.partPick && box.dataset.verseKey && box.dataset.position) {
+          // Choosing a part: the tap picks a word instead of revealing it
+          this.pickPartWord(box);
         } else if (box.dataset.key) {
           this.setRevealedForElements([box], !this.revealedWords.has(box.dataset.key));
         }

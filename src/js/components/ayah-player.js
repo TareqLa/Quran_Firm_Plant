@@ -9,6 +9,12 @@
 // It plays the surah file with quran.com's word timings when it can (word
 // follow, word steps, exact loops), and one file per ayah when it can't.
 //
+// A part (selectPart) is a stretch of words, possibly across ayahs, played as
+// a narrower window of the same surah file: Repeat, Echo (its pause as long as
+// the part), speed, the lock screen and the screen-off timing all work the
+// same. Parts need word timings; without them the player falls back to the
+// part's first ayah. Repeat keeps a count of its own for parts.
+//
 // Ayah ends are checked on a timer and on 'timeupdate' against the audio clock,
 // never only on animation frames: frames stop when the screen is off, and a
 // loop would then run on into the next ayah. Frames only drive smooth visuals.
@@ -18,9 +24,11 @@
 //   'time'   position moved (every frame while playing)
 //   'word'   the word being recited changed
 //   'pass'   an ayah was heard to the end once ({ key } in state.lastPass)
+//   'partpass' a part was heard to the end once ({ key, part } in state.lastPass).
+//            Not a Listened rep: nothing records it (parts are practice only).
 
 import {
-  DEFAULT_RECITER, loadChapter, peekChapter, ayahUrl, ayahUrlSync, reciterInfo,
+  DEFAULT_RECITER, loadChapter, peekChapter, ayahUrl, ayahUrlSync, reciterInfo, partSpan, wordOrd,
 } from '../data/recitations.js';
 
 export const REPEATS = [1, 2, 3, 5, Infinity];
@@ -33,15 +41,29 @@ const NO_WORDS_STEP_MS = 2000; // word steps without word timings move this far 
 const END_EPS_MS = 20;        // this close to the ayah's end counts as the end
 const HEARD_SHARE = 0.5;      // a pass counts as listened when at least this share was heard
 const MIN_GAP_MS = 800;
+const PART_REPEAT_DEFAULT = 3; // parts loop, so they start on ×3
 
 const STORE = {
   reciter: 'pagemap-reciter',
   rate: 'pagemap-rate',
   repeat: 'pagemap-repeat',
+  partRepeat: 'pagemap-part-repeat',
   echo: 'pagemap-echo',
 };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// A word's place in reading order: its position in an ayah, or across ayahs
+// in a part (wordOrd)
+const rank = (w) => w.ord ?? w.pos;
+
+const partId = (part) => (part ? `${part.from.key}:${part.from.pos}-${part.to.key}:${part.to.pos}` : null);
+
+function readRepeat(key, fallback) {
+  const v = readStored(key);
+  if (v === 'inf') return Infinity;
+  return v !== null && REPEATS.includes(Number(v)) ? Number(v) : fallback;
+}
 
 function readStored(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -51,7 +73,8 @@ function store(key, value) {
 }
 
 export class AyahPlayer {
-  // describe(verseKey) names an ayah for the lock screen, e.g. "At-Tariq 86:5"
+  // describe(verseKey, part) names an ayah or a part for the lock screen,
+  // e.g. "At-Tariq 86:5"
   constructor({ describe = (key) => key } = {}) {
     this.describe = describe;
     this.listeners = new Map();
@@ -65,8 +88,10 @@ export class AyahPlayer {
     this.srcUrl = null;       // the URL we gave the element (a.src is normalised)
 
     this.order = [];          // ayahs on the page in reading order (previous / next)
-    this.key = null;          // the loaded ayah
-    this.track = null;        // how it plays: { key, reciter, surah, mode: 'timed'|'ayah', url, from, to, words }
+    this.key = null;          // the loaded ayah (a part's first ayah)
+    this.part = null;         // the loaded part: { from: { key, pos }, to: { key, pos } }, or null for a whole ayah
+    this.partNav = null;      // (dir) => void: Previous / Next part on the lock screen, set by the page
+    this.track = null;        // how it plays: { key, reciter, surah, mode: 'timed'|'ayah', url, from, to, words, partId }
     this.status = 'idle';
     this.error = null;
     this.pos = 0;             // ms into the ayah while it isn't running
@@ -90,8 +115,11 @@ export class AyahPlayer {
     this.reciterId = Number.isInteger(savedReciter) ? savedReciter : DEFAULT_RECITER;
     const savedRate = parseFloat(readStored(STORE.rate));
     this.rate = RATES.includes(savedRate) ? savedRate : 1;
-    const savedRepeat = readStored(STORE.repeat);
-    this.repeat = savedRepeat === 'inf' ? Infinity : (REPEATS.includes(Number(savedRepeat)) ? Number(savedRepeat) : 1);
+    // Whole ayahs and parts each keep their own Repeat
+    this.repeats = {
+      ayah: readRepeat(STORE.repeat, 1),
+      part: readRepeat(STORE.partRepeat, PART_REPEAT_DEFAULT),
+    };
     this.echo = readStored(STORE.echo) === '1';
     a.defaultPlaybackRate = this.rate;
     a.playbackRate = this.rate;
@@ -174,6 +202,11 @@ export class AyahPlayer {
     return reciterInfo(this.reciterId);
   }
 
+  // The Repeat of what is loaded: a part's own, or the whole ayahs'
+  get repeat() {
+    return this.part ? this.repeats.part : this.repeats.ayah;
+  }
+
   // ms into the loaded ayah
   position() {
     return this.running ? this.now() : this.pos;
@@ -197,6 +230,7 @@ export class AyahPlayer {
       error: this.error,
       position: clamp(this.position(), 0, duration || Infinity),
       duration,
+      part: this.part,
       mode: this.track?.key === this.key ? this.track.mode : null,
       words: this.track?.key === this.key ? this.track.words : [],
       wordIndex: this.wordIndex,
@@ -230,8 +264,23 @@ export class AyahPlayer {
 
   // Load an ayah and play it (or leave it paused). pos: ms, 'last-word' or
   // { word: position } (the word's first time in the recitation).
-  select(key, { play = true, pos = 0 } = {}) {
+  select(key, opts = {}) {
     if (!key) return;
+    this.part = null;
+    this.load(key, opts);
+  }
+
+  // Load a part: the words from `from` to `to` ({ key, pos } each, in one
+  // surah, in either order), played as a window of the surah file. pos as for
+  // select(), with { word } a reading-order rank (wordOrd).
+  selectPart(from, to, opts = {}) {
+    if (!from?.key || !to?.key) return;
+    const [a, b] = wordOrd(from.key, from.pos) <= wordOrd(to.key, to.pos) ? [from, to] : [to, from];
+    this.part = { from: { key: a.key, pos: a.pos }, to: { key: b.key, pos: b.pos } };
+    this.load(a.key, opts);
+  }
+
+  load(key, { play = true, pos = 0 } = {}) {
     this.token++;
     this.halt();
     clearTimeout(this.gapTimer);
@@ -380,6 +429,11 @@ export class AyahPlayer {
       this.seek(to);
       return;
     }
+    // A part's first word: Back stays inside the part
+    if (this.part) {
+      this.seek(0);
+      return;
+    }
     const prev = this.neighbor(-1);
     if (prev) this.move(prev, 'last-word');
     else this.seek(0);
@@ -397,14 +451,27 @@ export class AyahPlayer {
       return;
     }
     const to = fwdWordTarget(words, t);
-    if (to === 'next') this.nextAyah();
-    else this.seek(to);
+    if (to !== 'next') this.seek(to);
+    else if (!this.part) this.nextAyah(); // a part's last word: Forward stays inside it
   }
 
+  // The lock screen's previous / next: an ayah, or a part when one is loaded
+  prevTrack() {
+    if (this.part && this.partNav) this.partNav(-1);
+    else this.prevAyah();
+  }
+
+  nextTrack() {
+    if (this.part && this.partNav) this.partNav(1);
+    else this.nextAyah();
+  }
+
+  // Sets the Repeat of what is loaded (parts keep their own)
   setRepeat(n) {
     if (!REPEATS.includes(n)) return;
-    this.repeat = n;
-    store(STORE.repeat, n === Infinity ? 'inf' : String(n));
+    const kind = this.part ? 'part' : 'ayah';
+    this.repeats[kind] = n;
+    store(kind === 'part' ? STORE.partRepeat : STORE.repeat, n === Infinity ? 'inf' : String(n));
     this.emit('state');
   }
 
@@ -453,8 +520,10 @@ export class AyahPlayer {
     // index in the time-ordered list doesn't carry over
     const word = this.status !== 'ended' && this.wordIndex >= 0 ? this.track?.words?.[this.wordIndex] : null;
     const play = this.isActive;
+    const pos = word ? { word: rank(word) } : 0;
     this.track = null;
-    this.select(this.key, { play, pos: word ? { word: word.pos } : 0 });
+    if (this.part) this.selectPart(this.part.from, this.part.to, { play, pos });
+    else this.select(this.key, { play, pos });
   }
 
   // Try again after an error
@@ -470,6 +539,7 @@ export class AyahPlayer {
     this.halt();
     clearTimeout(this.gapTimer);
     this.key = null;
+    this.part = null;
     this.track = null;
     this.pos = 0;
     this.pendingPos = null;
@@ -506,9 +576,11 @@ export class AyahPlayer {
     this.select(key, { play, pos });
   }
 
-  // The track for an ayah if it can be built without waiting for a request
+  // The track for an ayah (or the loaded part) if it can be built without
+  // waiting for a request
   trackFor(key) {
-    if (this.track && this.track.key === key && this.track.reciter === this.reciterId
+    const id = partId(this.part);
+    if (this.track && this.track.key === key && this.track.reciter === this.reciterId && this.track.partId === id
         && !(this.track.mode === 'timed' && this.failedFiles.has(this.track.fileKey))) {
       return this.track;
     }
@@ -517,13 +589,22 @@ export class AyahPlayer {
     if (!this.failedFiles.has(fileKey)) {
       const chapter = peekChapter(this.reciterId, surah);
       if (chapter === undefined) return null; // still loading: wait for it
-      const v = chapter?.verses.get(key);
-      if (v) {
-        return { key, reciter: this.reciterId, surah, fileKey, mode: 'timed', url: chapter.audioUrl, from: v.from, to: v.to, words: v.words };
+      if (this.part) {
+        const span = chapter && partSpan(chapter, this.part.from, this.part.to);
+        if (span) {
+          return { key, reciter: this.reciterId, surah, fileKey, mode: 'timed', url: chapter.audioUrl, from: span.from, to: span.to, words: span.words, partId: id };
+        }
+      } else {
+        const v = chapter?.verses.get(key);
+        if (v) {
+          return { key, reciter: this.reciterId, surah, fileKey, mode: 'timed', url: chapter.audioUrl, from: v.from, to: v.to, words: v.words, partId: null };
+        }
       }
     }
+    // A part can't be cut from per-ayah files: play its first ayah instead
+    if (this.part) this.dropPart();
     const url = ayahUrlSync(this.reciterId, key);
-    return url ? { key, reciter: this.reciterId, surah, fileKey, mode: 'ayah', url, from: 0, to: null, words: [] } : null;
+    return url ? { key, reciter: this.reciterId, surah, fileKey, mode: 'ayah', url, from: 0, to: null, words: [], partId: null } : null;
   }
 
   async resolveTrack(key) {
@@ -534,7 +615,18 @@ export class AyahPlayer {
     if (track) return track;
     const url = await ayahUrl(reciter, key);
     if (!url) throw new Error(`No recitation found for ${key}`);
-    return { key, reciter, surah, fileKey: `${reciter}:${surah}`, mode: 'ayah', url, from: 0, to: null, words: [] };
+    return { key, reciter, surah, fileKey: `${reciter}:${surah}`, mode: 'ayah', url, from: 0, to: null, words: [], partId: null };
+  }
+
+  // The loaded part can't play (no word timings for this reciter, or the
+  // surah file failed): go on with its first ayah as a whole
+  dropPart() {
+    if (!this.part) return;
+    this.part = null;
+    this.loop = 0;
+    this.pendingPos = null;
+    this.pos = 0;
+    this.emit('state');
   }
 
   // Run fn(track) with the loaded ayah's track, now or once it's known
@@ -726,8 +818,9 @@ export class AyahPlayer {
     this.heard = 0;
     this.loop += 1;
     if (dur > 0 && heard >= dur * HEARD_SHARE) {
-      this.lastPass = { key: this.key, loop: this.loop, at: Date.now() };
-      this.emit('pass');
+      this.lastPass = { key: this.key, part: this.part, loop: this.loop, at: Date.now() };
+      // A part's pass is not a Listened rep of its ayah
+      this.emit(this.part ? 'partpass' : 'pass');
     }
     if (this.echo) {
       this.startGap(dur / this.rate);
@@ -787,8 +880,8 @@ export class AyahPlayer {
       play: () => this.play(),
       pause: () => this.pause(),
       stop: () => this.pause(),
-      previoustrack: () => this.prevAyah(),
-      nexttrack: () => this.nextAyah(),
+      previoustrack: () => this.prevTrack(),
+      nexttrack: () => this.nextTrack(),
       seekbackward: () => this.backWord(),
       seekforward: () => this.fwdWord(),
       seekto: (d) => {
@@ -827,7 +920,7 @@ export class AyahPlayer {
         return;
       }
       const r = this.reciter;
-      const title = `${this.describe(this.key)} · ${r.short}`;
+      const title = `${this.describe(this.key, this.part)} · ${r.short}`;
       if (title !== this.mediaTitle && typeof MediaMetadata === 'function') {
         ms.metadata = new MediaMetadata({ title, artist: r.name, album: 'Quran Firm Plant' });
         this.mediaTitle = title;
@@ -892,7 +985,7 @@ export function backWordTarget(words, t) {
   if (t - cur.st > BACK_WORD_MS) return cur.st;
   // The word before in reading order (a word without timings is skipped)
   let pos = -Infinity;
-  for (const w of words) if (w.pos < cur.pos && w.pos > pos) pos = w.pos;
+  for (const w of words) if (rank(w) < rank(cur) && rank(w) > pos) pos = rank(w);
   return pos === -Infinity ? 'prev' : nearestOccurrence(words, pos, i, -1).st;
 }
 
@@ -904,31 +997,34 @@ export function fwdWordTarget(words, t) {
   const cur = words[i];
   if (t < cur.st) return cur.st; // before the first word starts
   let pos = Infinity;
-  for (const w of words) if (w.pos > cur.pos && w.pos < pos) pos = w.pos;
+  for (const w of words) if (rank(w) > rank(cur) && rank(w) < pos) pos = rank(w);
   return pos === Infinity ? 'next' : nearestOccurrence(words, pos, i, 1).st;
 }
 
-// The occurrence of the word at `pos` nearest to index i in direction dir
+// The occurrence of the word ranked `r` nearest to index i in direction dir
 // (-1 earlier, 1 later), else the nearest in the other direction
-function nearestOccurrence(words, pos, i, dir) {
-  for (let j = i + dir; j >= 0 && j < words.length; j += dir) if (words[j].pos === pos) return words[j];
-  for (let j = i - dir; j >= 0 && j < words.length; j -= dir) if (words[j].pos === pos) return words[j];
+function nearestOccurrence(words, r, i, dir) {
+  for (let j = i + dir; j >= 0 && j < words.length; j += dir) if (rank(words[j]) === r) return words[j];
+  for (let j = i - dir; j >= 0 && j < words.length; j -= dir) if (rank(words[j]) === r) return words[j];
   return words[i];
 }
 
-// The start of the ayah's last word in reading order, the last time it's heard
+// The start of the last word in reading order, the last time it's heard
 export function lastWordStart(words) {
   if (!words?.length) return 0;
   let last = words[0];
-  for (const w of words) if (w.pos >= last.pos) last = w;
+  for (const w of words) if (rank(w) >= rank(last)) last = w;
   return last.st;
 }
 
-// Where each word is first heard, in reading order: [{ pos, st }]
+// Where each word is first heard, in reading order: [{ pos, key, rank, st }]
+// (key only for a part's words)
 export function firstHearings(words) {
   const seen = new Map();
-  (words || []).forEach((w) => { if (!seen.has(w.pos)) seen.set(w.pos, w.st); });
-  return [...seen].map(([pos, st]) => ({ pos, st })).sort((a, b) => a.pos - b.pos);
+  (words || []).forEach((w) => { if (!seen.has(rank(w))) seen.set(rank(w), w); });
+  return [...seen.values()]
+    .map((w) => ({ pos: w.pos, key: w.key, rank: rank(w), st: w.st }))
+    .sort((a, b) => a.rank - b.rank);
 }
 
 function resolvePos(pos, track) {
@@ -939,7 +1035,7 @@ function resolvePos(pos, track) {
   if (pos && Number.isInteger(pos.word)) {
     // The word's first time, or the next word that has a timing
     const first = firstHearings(words);
-    return (first.find((w) => w.pos >= pos.word) || first[first.length - 1]).st;
+    return (first.find((w) => w.rank >= pos.word) || first[first.length - 1]).st;
   }
   return 0;
 }

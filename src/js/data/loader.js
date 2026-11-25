@@ -266,6 +266,30 @@ export class QuranLoader {
     }
   }
 
+  // Each ayah's whole Uthmani text on a page ({ verseKey: text }), cached. The
+  // V2 layout's words carry no waqf signs; the Page Map's part loops read them
+  // from here (the V1 layout's words have them already).
+  async loadVerseTexts(pageNumber) {
+    if (pageNumber < 1 || pageNumber > 604) return {};
+    const key = `verse-texts-${pageNumber}`;
+    const cached = await db.getProgress(key);
+    if (cached) return cached;
+    try {
+      const res = await fetch(`https://api.quran.com/api/v4/verses/by_page/${pageNumber}?fields=text_uthmani`);
+      if (!res.ok) throw new Error(`Ayah texts for page ${pageNumber}: HTTP ${res.status}`);
+      const data = await res.json();
+      const map = {};
+      (data.verses || []).forEach((v) => {
+        if (v.verse_key && v.text_uthmani) map[v.verse_key] = v.text_uthmani;
+      });
+      if (Object.keys(map).length) await db.saveProgress(key, map);
+      return map;
+    } catch (e) {
+      console.warn('Ayah texts unavailable; Next part uses the reciter\'s stops only.', e);
+      return {};
+    }
+  }
+
   // Load (and cache) the word-by-word English translation map for a page.
   // Keyed by "surah:ayah:position" so it can be matched against either mushaf
   // edition's word layout, since both share the same standard page->verse split.
